@@ -1,0 +1,59 @@
+from rest_framework.permissions import AllowAny
+from rest_framework.response import Response
+from rest_framework.views import APIView
+from rest_framework_simplejwt.views import TokenObtainPairView
+
+from accounts.models import Membership
+from accounts.serializers import (
+    MembershipSerializer,
+    OrganizationCreateSerializer,
+    OrganizationSerializer,
+    RegisterSerializer,
+    UserSerializer,
+)
+from core.views import AuthenticatedAPIView, OrganizationScopedMixin
+
+
+class LoginView(TokenObtainPairView):
+    throttle_scope = "auth"
+
+
+class RegisterView(APIView):
+    permission_classes = [AllowAny]
+    authentication_classes = []
+    throttle_scope = "auth"
+
+    def post(self, request):
+        serializer = RegisterSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        user = serializer.save()
+        return Response(UserSerializer(user).data, status=201)
+
+
+class MeView(AuthenticatedAPIView):
+    def get(self, request):
+        return Response(UserSerializer(request.user).data)
+
+
+class OrganizationListCreateView(AuthenticatedAPIView):
+    def get(self, request):
+        memberships = Membership.all_objects.filter(user=request.user, is_active=True).select_related("organization")
+        organizations = []
+        for membership in memberships:
+            org = membership.organization
+            org._requesting_membership = membership
+            organizations.append(org)
+        return Response(OrganizationSerializer(organizations, many=True).data)
+
+    def post(self, request):
+        serializer = OrganizationCreateSerializer(data=request.data, context={"request": request})
+        serializer.is_valid(raise_exception=True)
+        organization = serializer.save()
+        organization._requesting_membership = Membership.all_objects.get(organization=organization, user=request.user)
+        return Response(OrganizationSerializer(organization).data, status=201)
+
+
+class MembershipListView(OrganizationScopedMixin, APIView):
+    def get(self, request):
+        members = Membership.all_objects.filter(organization=request.organization, is_active=True).select_related("user")
+        return Response(MembershipSerializer(members, many=True).data)
