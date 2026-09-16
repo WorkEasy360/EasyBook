@@ -14,7 +14,7 @@ RUNNING LOCALLY
 - The Postgres role Django connects as (`easybook_app`, see `.env`) is deliberately NOT the superuser created by the official Postgres image — superusers always bypass Row Level Security. Never point `DB_USER` at the `easybook` superuser role.
 
 DEPENDENCIES
-Django 5.2 LTS, DRF 3.17, psycopg 3, djangorestframework-simplejwt, django-environ, django-cors-headers, celery, redis. Pinned in `requirements.txt`.
+Django 5.2 LTS, DRF 3.17, psycopg 3, djangorestframework-simplejwt, django-environ, django-cors-headers, celery, redis, boto3 (S3-compatible document storage — Phase 9, see `documents/CLAUDE.md`; lazy-imported so dev/test never require it at runtime). Pinned in `requirements.txt`.
 
 INVARIANTS
 - See root `CLAUDE.md` global rules — Decimal for money, tenant isolation fail-closed, audit every mutation.
@@ -52,7 +52,7 @@ TESTS
 `manage.py test --settings=config.settings.test`. Requires the Postgres container running (RLS tests execute real SQL against Postgres, not SQLite — do not switch the test DB engine).
 
 MODULE MAP
-`core` (tenancy, shared money/enum/recurrence helpers) -> `accounts`/`authz`/`audit` -> `accounting` -> `tax` (GST engine: state master, determination, component split — see `tax/CLAUDE.md`) -> `items`/`inventory` -> `sales`, `purchases` -> `projects`, `banking`, `compliance` (registers, GSTR-1/3B, e-Invoice/e-Way Bill — see `compliance/CLAUDE.md`) -> `reports` (read-only reporting layer over every module above — see `reports/CLAUDE.md`).
+`core` (tenancy, shared money/enum/recurrence helpers) -> `accounts`/`authz`/`audit` -> `accounting` -> `tax` (GST engine: state master, determination, component split — see `tax/CLAUDE.md`) -> `items`/`inventory` -> `sales`, `purchases` -> `projects`, `banking`, `compliance` (registers, GSTR-1/3B, e-Invoice/e-Way Bill — see `compliance/CLAUDE.md`) -> `reports` (read-only reporting layer over every module above — see `reports/CLAUDE.md`) -> `documents` (tenant-scoped document management + OCR foundation — see `documents/CLAUDE.md`; sits at the same top layer as `reports`, importing lazily across modules only to validate a `DocumentLink`'s target).
 Peer modules at the same level (sales and purchases; projects, banking and compliance) must not import each other: anything two of them need is promoted to a lower layer instead (see `core/CLAUDE.md`, and `tax/services/party.py` for the same pattern one layer up — shared between `sales.Customer` and `purchases.Vendor` tax fields). `projects`, `banking` and `compliance` sit above `sales`/`purchases` and may import them; the reverse is forbidden, which is why `purchases.Expense.project` is a string FK reference. `tax` sits below `items` (`Item.tax_rate` FKs into it) and below `sales`/`purchases` and must NEVER import either — it is called, it does not call out.
 
 READ FIRST

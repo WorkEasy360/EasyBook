@@ -248,3 +248,43 @@ class TaxCompliancePermissionTests(SimpleTestCase):
             Permission.CANCEL_EWAYBILL,
         ]:
             self.assertFalse(role_has_permission(Role.VIEWER, permission), permission)
+
+
+class DocumentsPermissionTests(SimpleTestCase):
+    """Phase 9. Approving an OCR review can auto-complete an extraction the
+    same way POST_INVOICE finalizes a document, and deleting/archiving a
+    document may remove the only evidence behind a posted transaction — both
+    stay with the Accountant, the same line as RECORD_VENDOR_PAYMENT."""
+
+    def test_staff_can_upload_and_download_but_not_manage_review_or_delete(self):
+        self.assertTrue(role_has_permission(Role.STAFF, Permission.VIEW_DOCUMENTS))
+        self.assertTrue(role_has_permission(Role.STAFF, Permission.UPLOAD_DOCUMENT))
+        self.assertTrue(role_has_permission(Role.STAFF, Permission.DOWNLOAD_DOCUMENT))
+        for permission in [
+            Permission.MANAGE_DOCUMENTS,
+            Permission.REVIEW_DOCUMENT_OCR,
+            Permission.DELETE_DOCUMENT,
+        ]:
+            self.assertFalse(role_has_permission(Role.STAFF, permission), permission)
+
+    def test_accountant_has_the_full_document_set(self):
+        for permission in [
+            Permission.VIEW_DOCUMENTS,
+            Permission.UPLOAD_DOCUMENT,
+            Permission.DOWNLOAD_DOCUMENT,
+            Permission.MANAGE_DOCUMENTS,
+            Permission.REVIEW_DOCUMENT_OCR,
+            Permission.DELETE_DOCUMENT,
+        ]:
+            self.assertTrue(role_has_permission(Role.ACCOUNTANT, permission), permission)
+
+    def test_viewer_reads_and_downloads_but_writes_nothing(self):
+        self.assertTrue(role_has_permission(Role.VIEWER, Permission.VIEW_DOCUMENTS))
+        self.assertTrue(role_has_permission(Role.VIEWER, Permission.DOWNLOAD_DOCUMENT))
+        for permission in [
+            Permission.UPLOAD_DOCUMENT,
+            Permission.MANAGE_DOCUMENTS,
+            Permission.REVIEW_DOCUMENT_OCR,
+            Permission.DELETE_DOCUMENT,
+        ]:
+            self.assertFalse(role_has_permission(Role.VIEWER, permission), permission)

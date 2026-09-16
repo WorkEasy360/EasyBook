@@ -33,6 +33,7 @@ INSTALLED_APPS = [
     "accounts",
     "authz",
     "audit",
+    "documents",
     "accounting",
     "tax",
     "items",
@@ -197,3 +198,37 @@ LOGGING = {
         "django": {"handlers": ["console"], "level": env("LOG_LEVEL", default="INFO"), "propagate": False},
     },
 }
+
+# --- Documents / OCR (Phase 9) ----------------------------------------------
+# See documents/CLAUDE.md. `local` (FileSystemStorage under private_media/) is
+# the dev/test default since no S3-compatible service is provisioned in
+# infrastructure/docker-compose.yml yet; production sets DOCUMENT_STORAGE_BACKEND=s3.
+
+DOCUMENT_STORAGE_BACKEND = env("DOCUMENT_STORAGE_BACKEND", default="local")
+DOCUMENT_LOCAL_STORAGE_ROOT = env("DOCUMENT_LOCAL_STORAGE_ROOT", default=str(BASE_DIR / "private_media" / "documents"))
+DOCUMENT_STORAGE_S3_BUCKET = env("DOCUMENT_STORAGE_S3_BUCKET", default="")
+DOCUMENT_STORAGE_S3_ENDPOINT_URL = env("DOCUMENT_STORAGE_S3_ENDPOINT_URL", default="")
+DOCUMENT_STORAGE_S3_REGION = env("DOCUMENT_STORAGE_S3_REGION", default="")
+
+# Short-lived by design (phase section 3/21) — never a long-lived or
+# permanent link, regardless of backend.
+DOCUMENT_SIGNED_URL_TTL_SECONDS = env.int("DOCUMENT_SIGNED_URL_TTL_SECONDS", default=300)
+
+# Per-category ceilings (phase section 5) — deliberately not one blanket
+# limit: an image or PDF legitimately needs more room than a CSV/receipt scan.
+DOCUMENT_MAX_UPLOAD_SIZES = {
+    "default": env.int("DOCUMENT_MAX_UPLOAD_SIZE_DEFAULT", default=10 * 1024 * 1024),
+    "image": env.int("DOCUMENT_MAX_UPLOAD_SIZE_IMAGE", default=15 * 1024 * 1024),
+    "pdf": env.int("DOCUMENT_MAX_UPLOAD_SIZE_PDF", default=25 * 1024 * 1024),
+}
+
+# Malware scan hook (phase section 7) — see documents/services/malware_scan.py
+# for why this is a mock scanner and what replacing it for production requires.
+DOCUMENT_MALWARE_SCANNER_BACKEND = env("DOCUMENT_MALWARE_SCANNER_BACKEND", default="eicar_mock")
+
+DOCUMENT_OCR_PROVIDER = env("DOCUMENT_OCR_PROVIDER", default="manual")
+
+# OCR confidence thresholds (phase section 14). >= HIGH can prefill without a
+# warning; >= LOW but < HIGH shows a warning; below LOW forces NEEDS_REVIEW.
+DOCUMENT_OCR_CONFIDENCE_HIGH = env.float("DOCUMENT_OCR_CONFIDENCE_HIGH", default=0.90)
+DOCUMENT_OCR_CONFIDENCE_LOW = env.float("DOCUMENT_OCR_CONFIDENCE_LOW", default=0.60)

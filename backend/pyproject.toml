@@ -54,7 +54,7 @@ ignore = [
 [tool.ruff.lint.isort]
 known-first-party = [
     "accounting", "accounts", "audit", "authz", "config",
-    "core", "inventory", "items", "purchases", "sales",
+    "core", "documents", "inventory", "items", "purchases", "sales",
 ]
 
 [tool.bandit]

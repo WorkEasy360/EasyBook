@@ -89,6 +89,12 @@ class Permission:
     CANCEL_EINVOICE = "compliance.cancel_einvoice"
     GENERATE_EWAYBILL = "compliance.generate_ewaybill"
     CANCEL_EWAYBILL = "compliance.cancel_ewaybill"
+    VIEW_DOCUMENTS = "documents.view"
+    UPLOAD_DOCUMENT = "documents.upload"
+    DOWNLOAD_DOCUMENT = "documents.download"
+    MANAGE_DOCUMENTS = "documents.manage"
+    REVIEW_DOCUMENT_OCR = "documents.review_ocr"
+    DELETE_DOCUMENT = "documents.delete"
 
 
 _ALL_PERMISSIONS = {
@@ -163,6 +169,12 @@ _ALL_PERMISSIONS = {
     Permission.CANCEL_EINVOICE,
     Permission.GENERATE_EWAYBILL,
     Permission.CANCEL_EWAYBILL,
+    Permission.VIEW_DOCUMENTS,
+    Permission.UPLOAD_DOCUMENT,
+    Permission.DOWNLOAD_DOCUMENT,
+    Permission.MANAGE_DOCUMENTS,
+    Permission.REVIEW_DOCUMENT_OCR,
+    Permission.DELETE_DOCUMENT,
 }
 
 ROLE_PERMISSIONS = {
@@ -239,6 +251,16 @@ ROLE_PERMISSIONS = {
         Permission.CANCEL_EINVOICE,
         Permission.GENERATE_EWAYBILL,
         Permission.CANCEL_EWAYBILL,
+        # The Accountant holds the full document set too: reviewing/approving
+        # an OCR extraction and deleting (archiving) a document that may be
+        # the only supporting evidence behind a posted transaction are the
+        # same class of authoritative act as POST_INVOICE/POST_BILL above.
+        Permission.VIEW_DOCUMENTS,
+        Permission.UPLOAD_DOCUMENT,
+        Permission.DOWNLOAD_DOCUMENT,
+        Permission.MANAGE_DOCUMENTS,
+        Permission.REVIEW_DOCUMENT_OCR,
+        Permission.DELETE_DOCUMENT,
     },
     Role.STAFF: {
         Permission.VIEW_ACCOUNTING,
@@ -343,6 +365,15 @@ ROLE_PERMISSIONS = {
         # profile, the chart-of-accounts tax mapping, and the rate table
         # decides how every future document is taxed — the same weight as
         # MANAGE_ACCOUNTING, which this role also does not hold.
+        Permission.VIEW_DOCUMENTS,
+        Permission.UPLOAD_DOCUMENT,
+        Permission.DOWNLOAD_DOCUMENT,
+        # NOT MANAGE_DOCUMENTS / REVIEW_DOCUMENT_OCR / DELETE_DOCUMENT: an
+        # approved OCR review can auto-complete extraction the same way
+        # POST_INVOICE finalizes a document, and deleting/archiving a
+        # document may remove the only evidence behind a posted transaction
+        # — both stay with the Accountant, the same line as
+        # RECORD_VENDOR_PAYMENT.
     },
     Role.VIEWER: {
         Permission.VIEW_ACCOUNTING,
@@ -373,6 +404,8 @@ ROLE_PERMISSIONS = {
         Permission.VIEW_TAX_SETTINGS,
         Permission.VIEW_TAX_RATES,
         Permission.VIEW_RETURNS,
+        Permission.VIEW_DOCUMENTS,
+        Permission.DOWNLOAD_DOCUMENT,
     },
 }
 
