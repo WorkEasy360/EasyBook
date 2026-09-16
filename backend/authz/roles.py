@@ -111,6 +111,13 @@ class Permission:
     EDIT_AUTOMATION = "automation.edit"
     ENABLE_AUTOMATION = "automation.enable"
     DISABLE_AUTOMATION = "automation.disable"
+    RUN_AUTOMATION = "automation.run"
+    VIEW_AUTOMATION_HISTORY = "automation.view_history"
+    RETRY_AUTOMATION = "automation.retry"
+    # Privileged: a webhook action reaches an external network endpoint and
+    # can carry a signing secret — Owner/Admin only, unlike every other
+    # automation.* permission above (see ROLE_PERMISSIONS).
+    MANAGE_AUTOMATION_WEBHOOKS = "automation.manage_webhooks"
 
 
 _ALL_PERMISSIONS = {
@@ -199,6 +206,10 @@ _ALL_PERMISSIONS = {
     Permission.EDIT_AUTOMATION,
     Permission.ENABLE_AUTOMATION,
     Permission.DISABLE_AUTOMATION,
+    Permission.RUN_AUTOMATION,
+    Permission.VIEW_AUTOMATION_HISTORY,
+    Permission.RETRY_AUTOMATION,
+    Permission.MANAGE_AUTOMATION_WEBHOOKS,
 }
 
 ROLE_PERMISSIONS = {
@@ -300,6 +311,9 @@ ROLE_PERMISSIONS = {
         Permission.EDIT_AUTOMATION,
         Permission.ENABLE_AUTOMATION,
         Permission.DISABLE_AUTOMATION,
+        Permission.RUN_AUTOMATION,
+        Permission.VIEW_AUTOMATION_HISTORY,
+        Permission.RETRY_AUTOMATION,
     },
     Role.STAFF: {
         Permission.VIEW_ACCOUNTING,
@@ -423,6 +437,9 @@ ROLE_PERMISSIONS = {
         Permission.EDIT_AUTOMATION,
         Permission.ENABLE_AUTOMATION,
         Permission.DISABLE_AUTOMATION,
+        Permission.RUN_AUTOMATION,
+        Permission.VIEW_AUTOMATION_HISTORY,
+        Permission.RETRY_AUTOMATION,
     },
     Role.VIEWER: {
         Permission.VIEW_ACCOUNTING,
@@ -457,6 +474,7 @@ ROLE_PERMISSIONS = {
         Permission.DOWNLOAD_DOCUMENT,
         Permission.USE_AI_ASSISTANT,
         Permission.VIEW_AUTOMATION,
+        Permission.VIEW_AUTOMATION_HISTORY,
     },
 }
 

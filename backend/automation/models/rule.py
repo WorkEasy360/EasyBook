@@ -29,6 +29,12 @@ class AutomationRule(TenantScopedModel):
     priority = models.PositiveIntegerField(default=0)
     stop_on_failure = models.BooleanField(default=False)
     max_runs_per_period = models.PositiveIntegerField(null=True, blank=True)
+    # Scan-based triggers only (invoice.overdue, stock.low — phase section
+    # 48): minimum whole days between two executions for the SAME entity.
+    # None means "use AUTOMATION_DEFAULT_COOLDOWN_DAYS". Ignored for
+    # event/manual/pure-schedule triggers, which have their own dedup
+    # (AutomationExecution's unique constraint / AutomationScheduleOccurrence).
+    cooldown_days = models.PositiveIntegerField(null=True, blank=True)
 
     created_by = models.ForeignKey(
         settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL, related_name="+"

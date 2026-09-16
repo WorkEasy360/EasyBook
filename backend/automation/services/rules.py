@@ -45,6 +45,31 @@ def validate_rule(*, trigger_type: str, conditions: list[dict], actions: list[di
         )
 
 
+def _assert_actions_authorized(*, organization, actor, actions: list[dict]) -> None:
+    """A webhook action is privileged (phase section 56: `manage_webhooks`
+    is Owner/Admin-only) — checked wherever a rule's action list is set or
+    a rule containing one is activated, since `CREATE_AUTOMATION`/
+    `EDIT_AUTOMATION` alone (held by Accountant/Staff too) must not become a
+    backdoor into configuring outbound network calls (root CLAUDE.md:
+    "Never allow workflow configuration to become an RBAC bypass")."""
+    if not any(action["action_id"] == "call_webhook" for action in actions):
+        return
+
+    from accounts.models import Membership
+    from authz.roles import Permission, role_has_permission
+
+    membership = None
+    if actor is not None:
+        membership = Membership.all_objects.filter(
+            organization_id=organization.id, user_id=actor.id, is_active=True
+        ).first()
+    if membership is None or not role_has_permission(membership.role, Permission.MANAGE_AUTOMATION_WEBHOOKS):
+        raise ApplicationError(
+            "Configuring or activating a webhook action requires the automation.manage_webhooks permission.",
+            code="automation_webhook_permission_denied",
+        )
+
+
 def _replace_conditions(*, rule: AutomationRule, conditions: list[dict]) -> None:
     rule.conditions.all().delete()
     for index, condition in enumerate(conditions):
@@ -82,9 +107,11 @@ def create_rule(
     priority: int = 0,
     stop_on_failure: bool = False,
     max_runs_per_period: int | None = None,
+    cooldown_days: int | None = None,
     actor=None,
 ) -> AutomationRule:
     validate_rule(trigger_type=trigger_type, conditions=conditions, actions=actions)
+    _assert_actions_authorized(organization=organization, actor=actor, actions=actions)
 
     rule = AutomationRule.objects.create(
         organization=organization,
@@ -95,6 +122,7 @@ def create_rule(
         priority=priority,
         stop_on_failure=stop_on_failure,
         max_runs_per_period=max_runs_per_period,
+        cooldown_days=cooldown_days,
         created_by=actor,
         updated_by=actor,
     )
@@ -146,6 +174,7 @@ def update_rule(
             else [{"action_id": a.action_id, "config": a.config} for a in rule.actions.all()]
         )
         validate_rule(trigger_type=trigger_type, conditions=effective_conditions, actions=effective_actions)
+        _assert_actions_authorized(organization=rule.organization, actor=actor, actions=effective_actions)
 
         if conditions is not None:
             _replace_conditions(rule=rule, conditions=conditions)
@@ -194,6 +223,11 @@ def _transition(*, rule: AutomationRule, target: str, actor=None) -> AutomationR
             conditions=_current_conditions(rule),
             actions=_current_actions(rule),
         )
+        _assert_actions_authorized(organization=rule.organization, actor=actor, actions=_current_actions(rule))
+
+        from automation.services.scheduling import ensure_schedule
+
+        ensure_schedule(rule=rule)
 
     previous = rule.status
     rule.status = target

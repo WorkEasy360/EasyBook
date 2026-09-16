@@ -27,6 +27,10 @@ class ActionDefinition:
     safety_level: int
     # {config_key: "string"} — minimal type declarations, checked below.
     config_schema: dict[str, str] = field(default_factory=dict)
+    # Subset of config_schema that must be present. A schema key not listed
+    # here is optional — allowed if provided (and type-checked), omittable
+    # otherwise (e.g. send_notification's recipient_id).
+    required_config_keys: frozenset[str] = field(default_factory=frozenset)
     # Empty means "any trigger type may use this action".
     allowed_trigger_types: frozenset[str] = field(default_factory=frozenset)
 
@@ -72,14 +76,21 @@ def validate_action_config(*, action_id: str, trigger_type: str, config: dict) -
             f"Unknown configuration keys for action '{action_id}': {', '.join(sorted(unknown))}.",
             code="automation_action_config_invalid",
         )
-    for key, expected_type in action.config_schema.items():
+    for key in action.required_config_keys:
         if key not in config:
             raise ApplicationError(
                 f"Action '{action_id}' requires '{key}' in its configuration.",
                 code="automation_action_config_invalid",
             )
-        if expected_type == "string" and not isinstance(config[key], str):
+    for key, value in config.items():
+        expected_type = action.config_schema[key]
+        if expected_type == "string" and not isinstance(value, str):
             raise ApplicationError(f"'{key}' must be a string.", code="automation_action_config_invalid")
+
+    if action_id == "call_webhook" and "url" in config:
+        from automation.actions.webhook_security import validate_webhook_url
+
+        validate_webhook_url(config["url"])
 
 
 register(
@@ -87,7 +98,8 @@ register(
         id="send_notification",
         label="Send in-app notification",
         safety_level=SAFETY_LEVEL_LOW_RISK,
-        config_schema={"message": "string"},
+        config_schema={"message": "string", "recipient_id": "string"},
+        required_config_keys=frozenset({"message"}),
     )
 )
 register(
@@ -96,6 +108,7 @@ register(
         label="Generate report",
         safety_level=SAFETY_LEVEL_LOW_RISK,
         config_schema={"report_type": "string"},
+        required_config_keys=frozenset({"report_type"}),
     )
 )
 register(
@@ -105,5 +118,16 @@ register(
         safety_level=SAFETY_LEVEL_LOW_RISK,
         config_schema={},
         allowed_trigger_types=frozenset({"invoice.overdue"}),
+    )
+)
+register(
+    ActionDefinition(
+        id="call_webhook",
+        label="Call outbound webhook",
+        safety_level=SAFETY_LEVEL_LOW_RISK,
+        # `secret` (optional) signs the payload (HMAC-SHA256) but is never
+        # returned by the API once set — see api/serializers.py masking.
+        config_schema={"url": "string", "secret": "string"},  # nosec B105 -- type-name literal, not a credential
+        required_config_keys=frozenset({"url"}),
     )
 )

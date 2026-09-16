@@ -138,6 +138,16 @@ CELERY_RESULT_SERIALIZER = "json"
 CELERY_ACCEPT_CONTENT = ["json"]
 CELERY_TIMEZONE = TIME_ZONE
 
+# --- Automation (Phase 11) ---------------------------------------------------
+# Maximum causation chain depth an automation-triggered domain event may
+# reach (phase sections 49-51). Automation A -> mutation -> event -> rule B
+# -> mutation -> event -> rule A again is stopped here rather than looping
+# forever; exceeding it fails that step closed (category "safety_limit").
+AUTOMATION_MAX_DEPTH = env.int("AUTOMATION_MAX_DEPTH", default=5)
+# "http" (real urllib POST) or "fake" (deterministic, no network I/O —
+# tests must never call a real external endpoint, phase section 90).
+AUTOMATION_WEBHOOK_SENDER_BACKEND = env("AUTOMATION_WEBHOOK_SENDER_BACKEND", default="http")
+
 # --- Django REST Framework ---------------------------------------------------
 
 REST_FRAMEWORK = {

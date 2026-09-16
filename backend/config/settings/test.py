@@ -22,3 +22,6 @@ AI_ALLOW_FAKE_PROVIDERS = True
 AI_AUTO_INDEX_DOCUMENTS = False
 AI_RETRY_BACKOFF_SECONDS = 0.0
 AI_RETRY_MAX_BACKOFF_SECONDS = 0.0
+
+# Automated tests must never call a real external endpoint (phase section 90).
+AUTOMATION_WEBHOOK_SENDER_BACKEND = "fake"

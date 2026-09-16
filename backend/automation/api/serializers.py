@@ -2,7 +2,9 @@ from rest_framework import serializers
 
 from automation.models.action import AutomationActionConfig
 from automation.models.condition import AutomationCondition
+from automation.models.execution import AutomationExecution
 from automation.models.rule import AutomationRule
+from automation.models.step_execution import AutomationStepExecution
 from automation.services.rules import create_rule, update_rule
 
 
@@ -17,6 +19,16 @@ class AutomationActionConfigSerializer(serializers.ModelSerializer):
         model = AutomationActionConfig
         fields = ["action_id", "config"]
 
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        # A webhook secret is write-only: never returned once set (phase
+        # section 89) — no secret-storage architecture exists in this
+        # codebase yet, so masking the API response is the control until
+        # one does.
+        if data.get("action_id") == "call_webhook" and data.get("config", {}).get("secret"):
+            data["config"] = {**data["config"], "secret": "********"}  # nosec B105 -- masking placeholder, not a credential
+        return data
+
 
 class AutomationRuleSerializer(serializers.ModelSerializer):
     conditions = AutomationConditionSerializer(many=True, read_only=True)
@@ -26,7 +38,7 @@ class AutomationRuleSerializer(serializers.ModelSerializer):
         model = AutomationRule
         fields = [
             "id", "name", "description", "trigger_type", "status", "version", "priority",
-            "stop_on_failure", "max_runs_per_period", "conditions", "actions",
+            "stop_on_failure", "max_runs_per_period", "cooldown_days", "conditions", "actions",
             "created_at", "updated_at",
         ]
         read_only_fields = ["id", "status", "version", "conditions", "actions", "created_at", "updated_at"]
@@ -50,6 +62,7 @@ class AutomationRuleCreateSerializer(serializers.Serializer):
     priority = serializers.IntegerField(required=False, default=0, min_value=0)
     stop_on_failure = serializers.BooleanField(required=False, default=False)
     max_runs_per_period = serializers.IntegerField(required=False, allow_null=True, default=None, min_value=1)
+    cooldown_days = serializers.IntegerField(required=False, allow_null=True, default=None, min_value=0)
     conditions = AutomationConditionInputSerializer(many=True, required=False, default=list)
     actions = AutomationActionConfigInputSerializer(many=True)
 
@@ -64,6 +77,7 @@ class AutomationRuleUpdateSerializer(serializers.Serializer):
     priority = serializers.IntegerField(required=False, min_value=0)
     stop_on_failure = serializers.BooleanField(required=False)
     max_runs_per_period = serializers.IntegerField(required=False, allow_null=True, min_value=1)
+    cooldown_days = serializers.IntegerField(required=False, allow_null=True, min_value=0)
     conditions = AutomationConditionInputSerializer(many=True, required=False)
     actions = AutomationActionConfigInputSerializer(many=True, required=False)
 
@@ -75,3 +89,27 @@ class AutomationRuleUpdateSerializer(serializers.Serializer):
         return update_rule(
             rule=self.context["rule"], conditions=conditions, actions=actions, actor=request.user, **data
         )
+
+
+class AutomationStepExecutionSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = AutomationStepExecution
+        fields = [
+            "id", "order", "action_id", "config_snapshot", "status", "attempt",
+            "failure_category", "error_message", "result", "started_at", "finished_at",
+        ]
+        read_only_fields = fields
+
+
+class AutomationExecutionSerializer(serializers.ModelSerializer):
+    steps = AutomationStepExecutionSerializer(many=True, read_only=True)
+
+    class Meta:
+        model = AutomationExecution
+        fields = [
+            "id", "rule", "rule_version", "trigger_source", "entity_id", "status",
+            "causation_id", "correlation_id", "depth", "initiated_by", "executed_as",
+            "started_at", "finished_at", "attempt_count", "error_summary", "steps",
+            "created_at",
+        ]
+        read_only_fields = fields
