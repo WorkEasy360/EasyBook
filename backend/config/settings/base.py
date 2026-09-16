@@ -47,6 +47,9 @@ INSTALLED_APPS = [
     # ai sits above every module it reads (reports, documents, sales, ...) —
     # nothing below it may import it. See ai/CLAUDE.md.
     "ai",
+    # automation sits above ai (it calls ai.orchestration.assist for draft
+    # actions) — the top of the module map. See automation/CLAUDE.md.
+    "automation",
 ]
 
 MIDDLEWARE = [

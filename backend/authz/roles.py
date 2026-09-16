@@ -102,6 +102,15 @@ class Permission:
     USE_AI_ASSISTANT = "ai.ask"
     MANAGE_AI_INDEX = "ai.manage_index"
     VIEW_AI_USAGE = "ai.view_usage"
+    # Automation (Phase 11). automation.enable/disable are the activate/pause
+    # transitions specifically (authz/CLAUDE.md convention: a write-class
+    # permission distinct from create/edit for a state transition that is
+    # the point a rule starts actually running unattended).
+    VIEW_AUTOMATION = "automation.view"
+    CREATE_AUTOMATION = "automation.create"
+    EDIT_AUTOMATION = "automation.edit"
+    ENABLE_AUTOMATION = "automation.enable"
+    DISABLE_AUTOMATION = "automation.disable"
 
 
 _ALL_PERMISSIONS = {
@@ -185,6 +194,11 @@ _ALL_PERMISSIONS = {
     Permission.USE_AI_ASSISTANT,
     Permission.MANAGE_AI_INDEX,
     Permission.VIEW_AI_USAGE,
+    Permission.VIEW_AUTOMATION,
+    Permission.CREATE_AUTOMATION,
+    Permission.EDIT_AUTOMATION,
+    Permission.ENABLE_AUTOMATION,
+    Permission.DISABLE_AUTOMATION,
 }
 
 ROLE_PERMISSIONS = {
@@ -277,6 +291,15 @@ ROLE_PERMISSIONS = {
         Permission.MANAGE_AI_INDEX,
         # NOT VIEW_AI_USAGE: organization-wide AI usage/cost telemetry is an
         # administrative view (Owner/Admin), like MANAGE_MEMBERS.
+        # Automation rules are a live, schedule/event-driven equivalent of a
+        # RecurringInvoiceTemplate (they generate drafts/notifications
+        # unattended once ACTIVE) — same full grant as
+        # MANAGE_RECURRING_INVOICES above.
+        Permission.VIEW_AUTOMATION,
+        Permission.CREATE_AUTOMATION,
+        Permission.EDIT_AUTOMATION,
+        Permission.ENABLE_AUTOMATION,
+        Permission.DISABLE_AUTOMATION,
     },
     Role.STAFF: {
         Permission.VIEW_ACCOUNTING,
@@ -391,6 +414,15 @@ ROLE_PERMISSIONS = {
         # — both stay with the Accountant, the same line as
         # RECORD_VENDOR_PAYMENT.
         Permission.USE_AI_ASSISTANT,
+        # Same grant as the Accountant (see comment there): every action in
+        # the Phase 11 default catalog is Level 1 (notification/report/AI
+        # draft), the same weight as MANAGE_RECURRING_INVOICES which Staff
+        # already holds in full.
+        Permission.VIEW_AUTOMATION,
+        Permission.CREATE_AUTOMATION,
+        Permission.EDIT_AUTOMATION,
+        Permission.ENABLE_AUTOMATION,
+        Permission.DISABLE_AUTOMATION,
     },
     Role.VIEWER: {
         Permission.VIEW_ACCOUNTING,
@@ -424,6 +456,7 @@ ROLE_PERMISSIONS = {
         Permission.VIEW_DOCUMENTS,
         Permission.DOWNLOAD_DOCUMENT,
         Permission.USE_AI_ASSISTANT,
+        Permission.VIEW_AUTOMATION,
     },
 }
 
