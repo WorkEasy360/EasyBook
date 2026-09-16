@@ -6,6 +6,7 @@ Local dev infrastructure (Docker Compose) now; IaC for AWS (ECS/Fargate, RDS, El
 OWNS
 - `docker-compose.yml` — local Postgres 16 + Redis for backend development.
 - `postgres-init/01-app-role.sql` — creates the non-superuser `easybook_app` role Django connects as. This file is why RLS actually works locally; see the "known local port/role setup" note below before touching it.
+- `postgres-init/02-pgvector.sql` — installs the pgvector extension (Phase 10 AI/RAG) into `easybook` and `template1` as the superuser; the app role cannot (pgvector is not a trusted extension). The Postgres image is `pgvector/pgvector:pg16-trixie`: the official postgres:16 image on the same Debian trixie base plus pgvector, so an existing postgres:16 data volume is reused without a dump/restore or collation change. For an EXISTING volume, run both statements once by hand: `docker exec infrastructure-postgres-1 psql -U easybook -d easybook -c "CREATE EXTENSION IF NOT EXISTS vector;"` and the same with `-d template1`. Rollback: revert the image to `postgres:16` only after `manage.py migrate ai zero` (tables using the `vector` type must be gone first). Production (RDS PostgreSQL 16) supports pgvector; `rds_superuser` must create the extension before deploy.
 
 DOES NOT OWN
 - Application code, migrations (backend/), or frontend build config.

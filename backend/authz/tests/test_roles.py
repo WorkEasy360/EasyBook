@@ -288,3 +288,26 @@ class DocumentsPermissionTests(SimpleTestCase):
             Permission.DELETE_DOCUMENT,
         ]:
             self.assertFalse(role_has_permission(Role.VIEWER, permission), permission)
+
+
+class AIPermissionMatrixTests(SimpleTestCase):
+    """Phase 10 Ask Books. USE_AI_ASSISTANT grants no data by itself — each AI
+    tool re-checks its own VIEW_ permission — so every role may ask. Indexing
+    spends embedding budget across the library (Accountant+, with
+    MANAGE_DOCUMENTS); organization-wide usage telemetry is Owner/Admin only."""
+
+    def test_every_role_may_use_the_assistant(self):
+        for role in Role:
+            self.assertTrue(role_has_permission(role, Permission.USE_AI_ASSISTANT), role)
+
+    def test_index_management_stops_at_accountant(self):
+        for role in (Role.OWNER, Role.ADMIN, Role.ACCOUNTANT):
+            self.assertTrue(role_has_permission(role, Permission.MANAGE_AI_INDEX), role)
+        for role in (Role.STAFF, Role.VIEWER):
+            self.assertFalse(role_has_permission(role, Permission.MANAGE_AI_INDEX), role)
+
+    def test_usage_telemetry_is_owner_and_admin_only(self):
+        for role in (Role.OWNER, Role.ADMIN):
+            self.assertTrue(role_has_permission(role, Permission.VIEW_AI_USAGE), role)
+        for role in (Role.ACCOUNTANT, Role.STAFF, Role.VIEWER):
+            self.assertFalse(role_has_permission(role, Permission.VIEW_AI_USAGE), role)

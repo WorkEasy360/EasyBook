@@ -1,6 +1,10 @@
 services:
   postgres:
-    image: postgres:16
+    # The official postgres:16 image (same Debian trixie base, same PostgreSQL
+    # build) plus the pgvector extension Phase 10 Ask Books needs — see
+    # infrastructure/CLAUDE.md. Same major version and libc as the previous
+    # postgres:16 image, so an existing data volume is reused as-is.
+    image: pgvector/pgvector:pg16-trixie
     environment:
       POSTGRES_DB: easybook
       POSTGRES_USER: easybook

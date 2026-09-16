@@ -44,6 +44,9 @@ INSTALLED_APPS = [
     "banking",
     "compliance",
     "reports",
+    # ai sits above every module it reads (reports, documents, sales, ...) —
+    # nothing below it may import it. See ai/CLAUDE.md.
+    "ai",
 ]
 
 MIDDLEWARE = [
@@ -232,3 +235,61 @@ DOCUMENT_OCR_PROVIDER = env("DOCUMENT_OCR_PROVIDER", default="manual")
 # warning; >= LOW but < HIGH shows a warning; below LOW forces NEEDS_REVIEW.
 DOCUMENT_OCR_CONFIDENCE_HIGH = env.float("DOCUMENT_OCR_CONFIDENCE_HIGH", default=0.90)
 DOCUMENT_OCR_CONFIDENCE_LOW = env.float("DOCUMENT_OCR_CONFIDENCE_LOW", default=0.60)
+
+# --- AI / Ask Books (Phase 10) ---------------------------------------------
+# See ai/CLAUDE.md. Only the deterministic `fake` providers are implemented;
+# a live vendor provider is added together with a verified implementation.
+# ai/config.py::validate_ai_configuration refuses to start with Ask Books
+# enabled on a fake provider unless AI_ALLOW_FAKE_PROVIDERS is set, so the
+# test double can never silently answer production users.
+AI_ASK_BOOKS_ENABLED = env.bool("AI_ASK_BOOKS_ENABLED", default=False)
+AI_ALLOW_FAKE_PROVIDERS = env.bool("AI_ALLOW_FAKE_PROVIDERS", default=False)
+AI_AUTO_INDEX_DOCUMENTS = env.bool("AI_AUTO_INDEX_DOCUMENTS", default=True)
+
+AI_LLM_PROVIDER = env("AI_LLM_PROVIDER", default="fake")
+AI_LLM_MODEL = env("AI_LLM_MODEL", default="fake-llm-1")
+AI_LLM_TEMPERATURE = env.float("AI_LLM_TEMPERATURE", default=0.0)
+AI_LLM_MAX_OUTPUT_TOKENS = env.int("AI_LLM_MAX_OUTPUT_TOKENS", default=1024)
+AI_LLM_TIMEOUT_SECONDS = env.float("AI_LLM_TIMEOUT_SECONDS", default=30.0)
+
+AI_EMBEDDING_PROVIDER = env("AI_EMBEDDING_PROVIDER", default="fake")
+AI_EMBEDDING_MODEL = env("AI_EMBEDDING_MODEL", default="fake-hash-embedding-1")
+AI_EMBEDDING_DIMENSIONS = env.int("AI_EMBEDDING_DIMENSIONS", default=768)
+AI_EMBEDDING_TIMEOUT_SECONDS = env.float("AI_EMBEDDING_TIMEOUT_SECONDS", default=15.0)
+
+AI_RETRY_MAX_ATTEMPTS = env.int("AI_RETRY_MAX_ATTEMPTS", default=3)
+AI_RETRY_BACKOFF_SECONDS = env.float("AI_RETRY_BACKOFF_SECONDS", default=0.5)
+AI_RETRY_MAX_BACKOFF_SECONDS = env.float("AI_RETRY_MAX_BACKOFF_SECONDS", default=4.0)
+
+# Budgets — every one bounded; there is no "unlimited" setting.
+AI_MAX_TOOL_CALLS_PER_REQUEST = env.int("AI_MAX_TOOL_CALLS_PER_REQUEST", default=6)
+AI_MAX_LLM_ROUNDS = env.int("AI_MAX_LLM_ROUNDS", default=4)
+AI_MAX_TOOL_OUTPUT_CHARS = env.int("AI_MAX_TOOL_OUTPUT_CHARS", default=12000)
+AI_MAX_TOOL_ROWS = env.int("AI_MAX_TOOL_ROWS", default=25)
+AI_MAX_CONTEXT_CHARS = env.int("AI_MAX_CONTEXT_CHARS", default=48000)
+AI_MAX_QUESTION_CHARS = env.int("AI_MAX_QUESTION_CHARS", default=2000)
+AI_MAX_RETRIEVED_CHUNKS = env.int("AI_MAX_RETRIEVED_CHUNKS", default=6)
+AI_RETRIEVAL_CANDIDATES = env.int("AI_RETRIEVAL_CANDIDATES", default=20)
+# Model-specific: 0.15 is calibrated for the fake embedding on ai/evaluations/datasets.py
+# (irrelevant matches <= 0.11, relevant >= 0.179). Recalibrate with the evaluation
+# suite whenever a real embedding model is configured.
+AI_VECTOR_MIN_SIMILARITY = env.float("AI_VECTOR_MIN_SIMILARITY", default=0.15)
+AI_RRF_K = env.int("AI_RRF_K", default=60)
+AI_REQUEST_DEADLINE_SECONDS = env.float("AI_REQUEST_DEADLINE_SECONDS", default=90.0)
+
+AI_USER_REQUESTS_PER_MINUTE = env.int("AI_USER_REQUESTS_PER_MINUTE", default=10)
+AI_ORG_REQUESTS_PER_DAY = env.int("AI_ORG_REQUESTS_PER_DAY", default=1000)
+# 0 disables the monthly token cap (request-count limits above still apply).
+AI_ORG_MONTHLY_TOKEN_LIMIT = env.int("AI_ORG_MONTHLY_TOKEN_LIMIT", default=0)
+
+AI_CONVERSATION_CONTEXT_MESSAGES = env.int("AI_CONVERSATION_CONTEXT_MESSAGES", default=6)
+AI_CONVERSATION_RETENTION_DAYS = env.int("AI_CONVERSATION_RETENTION_DAYS", default=90)
+AI_REQUEST_LOG_RETENTION_DAYS = env.int("AI_REQUEST_LOG_RETENTION_DAYS", default=365)
+
+AI_CHUNK_TARGET_CHARS = env.int("AI_CHUNK_TARGET_CHARS", default=1200)
+AI_CHUNK_OVERLAP_CHARS = env.int("AI_CHUNK_OVERLAP_CHARS", default=200)
+AI_CHUNK_MAX_CHARS = env.int("AI_CHUNK_MAX_CHARS", default=2000)
+
+# Optional, for the usage API's cost ESTIMATE only — never stored, never
+# authoritative. JSON: {"<model>": {"input_per_million": "3.00", "output_per_million": "15.00"}}
+AI_MODEL_PRICING = env.json("AI_MODEL_PRICING", default={})

@@ -20,7 +20,7 @@ OWNS
 
 DOES NOT OWN (DELIBERATELY DEFERRED)
 - **Draft business-record creation from OCR** (phase section 17/section 39, marked optional/"if implemented"). Not built: `ManualOCRProvider` always returns empty `fields`, so there is nothing real to draft a Bill/Invoice/Expense from yet, and building the bridge against a provider that can never populate it would be dead code with no way to genuinely exercise "invalid extraction rejected". Revisit once a real OCR provider exists. The bridge, when built, MUST go through the target module's own domain service (e.g. `purchases.services.bills.create_bill`) — `documents` must never insert a `Bill`/`Invoice`/`Expense`/`JournalEntry` row directly (root CLAUDE.md pipeline rule).
-- Full RAG/embeddings — Phase 10. The model shape (organization/document_type/created_at/linked entities already on `Document`/`DocumentLink`) is RAG-ready metadata; nothing more was added.
+- RAG/embeddings — owned by `ai` (Phase 10, `ai/CLAUDE.md`), which sits ABOVE this module and reacts to `Document`/`OCRResult` saves via receivers in `ai/rag/signals.py`. `documents` must never import `ai`. Any change to `UploadStatus`/`OCRStatus` semantics must be mirrored in `ai/rag/text_source.py` and `ai/retrieval/search.py::retrievable_chunks`.
 - A dedicated Folder/Tag REST resource — the phase's own API list (section 25) didn't ask for one; `folder_id`/tags are set through the Document endpoints and `services/tags.py`.
 
 INVARIANTS

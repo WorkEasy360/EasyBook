@@ -95,6 +95,13 @@ class Permission:
     MANAGE_DOCUMENTS = "documents.manage"
     REVIEW_DOCUMENT_OCR = "documents.review_ocr"
     DELETE_DOCUMENT = "documents.delete"
+    # Ask Books (Phase 10). Asking grants NO data access by itself: every AI
+    # tool re-checks the specific VIEW_ permission its data needs
+    # (ai/tools/registry.py), so a role sees through the assistant exactly
+    # what it could already see through the API.
+    USE_AI_ASSISTANT = "ai.ask"
+    MANAGE_AI_INDEX = "ai.manage_index"
+    VIEW_AI_USAGE = "ai.view_usage"
 
 
 _ALL_PERMISSIONS = {
@@ -175,6 +182,9 @@ _ALL_PERMISSIONS = {
     Permission.MANAGE_DOCUMENTS,
     Permission.REVIEW_DOCUMENT_OCR,
     Permission.DELETE_DOCUMENT,
+    Permission.USE_AI_ASSISTANT,
+    Permission.MANAGE_AI_INDEX,
+    Permission.VIEW_AI_USAGE,
 }
 
 ROLE_PERMISSIONS = {
@@ -261,6 +271,12 @@ ROLE_PERMISSIONS = {
         Permission.MANAGE_DOCUMENTS,
         Permission.REVIEW_DOCUMENT_OCR,
         Permission.DELETE_DOCUMENT,
+        Permission.USE_AI_ASSISTANT,
+        # Re-indexing spends embedding budget across the organization's
+        # document library — it sits with MANAGE_DOCUMENTS, not with asking.
+        Permission.MANAGE_AI_INDEX,
+        # NOT VIEW_AI_USAGE: organization-wide AI usage/cost telemetry is an
+        # administrative view (Owner/Admin), like MANAGE_MEMBERS.
     },
     Role.STAFF: {
         Permission.VIEW_ACCOUNTING,
@@ -374,6 +390,7 @@ ROLE_PERMISSIONS = {
         # document may remove the only evidence behind a posted transaction
         # — both stay with the Accountant, the same line as
         # RECORD_VENDOR_PAYMENT.
+        Permission.USE_AI_ASSISTANT,
     },
     Role.VIEWER: {
         Permission.VIEW_ACCOUNTING,
@@ -406,6 +423,7 @@ ROLE_PERMISSIONS = {
         Permission.VIEW_RETURNS,
         Permission.VIEW_DOCUMENTS,
         Permission.DOWNLOAD_DOCUMENT,
+        Permission.USE_AI_ASSISTANT,
     },
 }
 

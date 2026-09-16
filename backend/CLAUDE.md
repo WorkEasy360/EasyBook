@@ -8,7 +8,7 @@ OWNS
 - Cross-app conventions: tenant isolation, error envelope, pagination, auth.
 
 RUNNING LOCALLY
-- `infrastructure/docker-compose.yml` provides Postgres 16 (host port 5442) and Redis (host port 6390) — remapped from the defaults because other local projects already hold 5432/6379 on this machine.
+- `infrastructure/docker-compose.yml` provides Postgres 16 with pgvector (host port 5442) and Redis (host port 6390) — remapped from the defaults because other local projects already hold 5432/6379 on this machine.
 - `.venv/` is the project's virtualenv (Python 3.10). Activate or call `.venv/Scripts/python.exe` directly on Windows.
 - `manage.py` defaults to `config.settings.dev`; tests use `config.settings.test` (`manage.py test --settings=config.settings.test`).
 - The Postgres role Django connects as (`easybook_app`, see `.env`) is deliberately NOT the superuser created by the official Postgres image — superusers always bypass Row Level Security. Never point `DB_USER` at the `easybook` superuser role.
@@ -52,7 +52,7 @@ TESTS
 `manage.py test --settings=config.settings.test`. Requires the Postgres container running (RLS tests execute real SQL against Postgres, not SQLite — do not switch the test DB engine).
 
 MODULE MAP
-`core` (tenancy, shared money/enum/recurrence helpers) -> `accounts`/`authz`/`audit` -> `accounting` -> `tax` (GST engine: state master, determination, component split — see `tax/CLAUDE.md`) -> `items`/`inventory` -> `sales`, `purchases` -> `projects`, `banking`, `compliance` (registers, GSTR-1/3B, e-Invoice/e-Way Bill — see `compliance/CLAUDE.md`) -> `reports` (read-only reporting layer over every module above — see `reports/CLAUDE.md`) -> `documents` (tenant-scoped document management + OCR foundation — see `documents/CLAUDE.md`; sits at the same top layer as `reports`, importing lazily across modules only to validate a `DocumentLink`'s target).
+`core` (tenancy, shared money/enum/recurrence helpers) -> `accounts`/`authz`/`audit` -> `accounting` -> `tax` (GST engine: state master, determination, component split — see `tax/CLAUDE.md`) -> `items`/`inventory` -> `sales`, `purchases` -> `projects`, `banking`, `compliance` (registers, GSTR-1/3B, e-Invoice/e-Way Bill — see `compliance/CLAUDE.md`) -> `reports` (read-only reporting layer over every module above — see `reports/CLAUDE.md`) -> `documents` (tenant-scoped document management + OCR foundation — see `documents/CLAUDE.md`; sits at the same top layer as `reports`, importing lazily across modules only to validate a `DocumentLink`'s target) -> `ai` (Ask Books: read-only tools over existing selectors + RAG over `documents`; the very top layer — nothing imports it; see `ai/CLAUDE.md`). `ai` requires the pgvector extension, created by a superuser before `migrate` (backend role cannot).
 Peer modules at the same level (sales and purchases; projects, banking and compliance) must not import each other: anything two of them need is promoted to a lower layer instead (see `core/CLAUDE.md`, and `tax/services/party.py` for the same pattern one layer up — shared between `sales.Customer` and `purchases.Vendor` tax fields). `projects`, `banking` and `compliance` sit above `sales`/`purchases` and may import them; the reverse is forbidden, which is why `purchases.Expense.project` is a string FK reference. `tax` sits below `items` (`Item.tax_rate` FKs into it) and below `sales`/`purchases` and must NEVER import either — it is called, it does not call out.
 
 READ FIRST

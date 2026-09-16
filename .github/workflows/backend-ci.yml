@@ -62,8 +62,9 @@ jobs:
     services:
       # A real Postgres, never SQLite: the RLS tests execute actual policies,
       # and the concurrency tests need real row locks. See backend/CLAUDE.md.
+      # pgvector image = postgres:16 + the pgvector extension (Phase 10 AI/RAG).
       postgres:
-        image: postgres:16
+        image: pgvector/pgvector:pg16-trixie
         env:
           POSTGRES_DB: easybook
           POSTGRES_USER: easybook
@@ -126,6 +127,16 @@ jobs:
           GRANT ALL PRIVILEGES ON DATABASE easybook TO easybook_app;
           GRANT CREATE, USAGE ON SCHEMA public TO easybook_app;
           SQL
+
+      - name: Install pgvector (superuser-only, untrusted extension)
+        # Mirrors infrastructure/postgres-init/02-pgvector.sql. Installing into
+        # template1 is what gives Django's test_easybook database the
+        # extension, since easybook_app cannot CREATE EXTENSION vector itself.
+        env:
+          PGPASSWORD: easybook
+        run: |
+          psql -h localhost -U easybook -d easybook -v ON_ERROR_STOP=1 -c "CREATE EXTENSION IF NOT EXISTS vector;"
+          psql -h localhost -U easybook -d template1 -v ON_ERROR_STOP=1 -c "CREATE EXTENSION IF NOT EXISTS vector;"
 
       - name: Assert the CI database role is not a superuser
         # Guards the guard: if this role ever gains superuser, every RLS test
