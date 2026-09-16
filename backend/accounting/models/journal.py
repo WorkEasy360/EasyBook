@@ -110,15 +110,15 @@ class JournalLine(TenantScopedModel):
     class Meta:
         constraints = [
             models.CheckConstraint(
-                check=models.Q(debit__gte=0) & models.Q(credit__gte=0),
+                condition=models.Q(debit__gte=0) & models.Q(credit__gte=0),
                 name="journal_line_amounts_nonnegative",
             ),
             models.CheckConstraint(
-                check=~(models.Q(debit__gt=0) & models.Q(credit__gt=0)),
+                condition=~(models.Q(debit__gt=0) & models.Q(credit__gt=0)),
                 name="journal_line_not_both_debit_and_credit",
             ),
             models.CheckConstraint(
-                check=~(models.Q(debit=0) & models.Q(credit=0)),
+                condition=~(models.Q(debit=0) & models.Q(credit=0)),
                 name="journal_line_not_both_zero",
             ),
         ]

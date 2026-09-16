@@ -1,16 +1,13 @@
 from django.conf import settings
 from django.db import models
 
+# Moved to core/enums.py when `purchases` needed the same catalog — see that
+# module. Re-exported here so `sales.models.payment.PaymentMethod` and the
+# `sales.models` package export keep working unchanged.
+from core.enums import PaymentMethod
 from core.models import TenantScopedModel
 
-
-class PaymentMethod(models.TextChoices):
-    CASH = "cash", "Cash"
-    BANK_TRANSFER = "bank_transfer", "Bank Transfer"
-    CHEQUE = "cheque", "Cheque"
-    CARD = "card", "Card"
-    UPI = "upi", "UPI"
-    OTHER = "other", "Other"
+__all__ = ["CustomerPayment", "PaymentAllocation", "PaymentMethod"]
 
 
 class CustomerPayment(TenantScopedModel):
@@ -45,7 +42,7 @@ class CustomerPayment(TenantScopedModel):
     class Meta:
         constraints = [
             models.UniqueConstraint(fields=["organization", "payment_number"], name="uniq_payment_number_per_org"),
-            models.CheckConstraint(check=models.Q(amount__gt=0), name="payment_amount_positive"),
+            models.CheckConstraint(condition=models.Q(amount__gt=0), name="payment_amount_positive"),
         ]
         indexes = [
             models.Index(fields=["organization", "customer"]),
@@ -82,7 +79,7 @@ class PaymentAllocation(TenantScopedModel):
 
     class Meta:
         constraints = [
-            models.CheckConstraint(check=models.Q(amount__gt=0), name="payment_allocation_amount_positive"),
+            models.CheckConstraint(condition=models.Q(amount__gt=0), name="payment_allocation_amount_positive"),
         ]
         indexes = [
             models.Index(fields=["organization", "invoice"]),

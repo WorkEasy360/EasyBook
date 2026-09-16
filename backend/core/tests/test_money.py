@@ -3,7 +3,7 @@ from decimal import Decimal
 from django.test import SimpleTestCase
 
 from core.exceptions import ApplicationError
-from sales.services.calculations import calculate_document_totals, calculate_line
+from core.money import calculate_document_totals, calculate_line
 
 
 class CalculateLineTests(SimpleTestCase):

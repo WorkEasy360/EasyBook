@@ -61,10 +61,9 @@ class GeneralLedgerTests(TestCase):
         self.assertEqual(running_balances, [Decimal("100.00"), Decimal("150.00"), Decimal("175.00")])
 
     def test_ledger_is_tenant_scoped(self):
-        other_org, other_user, _ = None, None, None
         from core.tests.factories import make_org_with_owner as _make
 
-        other_org, other_user, _ = _make("Other Org", "ledger-other@example.com")
+        other_org, _other_user, _ = _make("Other Org", "ledger-other@example.com")
         with tenant_context(organization_id=other_org.id):
             other_cash = create_account(
                 organization=other_org, code="1000", name="Cash", account_type=AccountType.ASSET

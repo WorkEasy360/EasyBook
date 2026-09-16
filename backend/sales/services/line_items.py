@@ -1,14 +1,14 @@
 """Shared line-building logic for every sales document (Quote, SalesOrder,
 and later Invoice/CreditNote) — item validation and the item-time snapshot
 are identical across documents; only the target model differs. See
-sales/CLAUDE.md snapshot principle and services/calculations.py.
+sales/CLAUDE.md snapshot principle and core/money.py.
 """
 
 from decimal import Decimal
 
 from core.exceptions import ApplicationError
+from core.money import calculate_line
 from items.models.item import Item
-from sales.services.calculations import calculate_line
 
 
 def validate_item_for_line(*, organization, item: Item) -> None:

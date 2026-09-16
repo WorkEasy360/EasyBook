@@ -1,0 +1,21 @@
+# Development / CI tooling. Deliberately separate from requirements.txt so
+# production images never install a linter or a scanner.
+#
+# Pinned exactly, like production deps (root CLAUDE.md): a lint/scan gate that
+# changes its mind between runs is not a gate.
+#
+# NOT included, each for a reason rather than an oversight:
+#   pytest   — the suite runs on Django's own test runner and uses
+#              TransactionTestCase semantics heavily (tenant GUCs, real
+#              connection contention). Migrating 635 passing tests to
+#              pytest-django buys nothing today and risks the concurrency
+#              coverage that matters most.
+#   mypy     — meaningful on a Django codebase only with django-stubs +
+#              djangorestframework-stubs and a long annotation pass. Worth
+#              doing as its own slice, not bolted on mid-phase.
+#   semgrep  — overlaps bandit and ruff's S rules for this codebase's shape;
+#              revisit when there is custom raw SQL or a public API surface.
+
+ruff==0.16.7
+bandit==1.9.4
+pip-audit==2.10.1

@@ -6,11 +6,12 @@ from accounts.services import allocate_sequence_number
 from audit.models import AuditLog
 from audit.services import record as record_audit
 from core.exceptions import ApplicationError
+from core.money import calculate_document_totals
 from sales.models.customer import Customer
 from sales.models.quote import Quote, QuoteLine, QuoteStatus
-from sales.services.calculations import calculate_document_totals
 from sales.services.customers import assert_customer_usable_for_new_transaction
 from sales.services.line_items import build_line_snapshot
+from tax.services.documents import resolve_document_tax
 
 QUOTE_NUMBER_SEQUENCE_KEY = "quote"
 
@@ -41,6 +42,7 @@ def create_quote(
     exchange_rate: Decimal = Decimal("1"),
     notes: str = "",
     terms: str = "",
+    place_of_supply=None,
     actor=None,
 ) -> Quote:
     if customer.organization_id != organization.id:
@@ -50,6 +52,12 @@ def create_quote(
         raise ApplicationError("A quote needs at least one line.", code="quote_no_lines")
 
     currency = currency or customer.currency
+    # Determined here even though a quote carries no component columns and
+    # posts nothing: the treatment is what converts forward to the order and
+    # invoice, so deciding it once at the start is what stops it drifting.
+    tax_treatment = resolve_document_tax(
+        organization=organization, party=customer, place_of_supply=place_of_supply
+    )
 
     quote_number = allocate_sequence_number(
         organization_id=organization.id, key=QUOTE_NUMBER_SEQUENCE_KEY, prefix="QUO-"
@@ -75,6 +83,7 @@ def create_quote(
         total=totals["total"],
         notes=notes,
         terms=terms,
+        **tax_treatment,
     )
     for row in line_rows:
         QuoteLine.objects.create(organization=organization, quote=quote, **row)

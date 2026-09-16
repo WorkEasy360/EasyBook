@@ -3,14 +3,19 @@ from decimal import Decimal
 from django.conf import settings
 from django.db import models
 
+# Moved to core/enums.py when `purchases` needed the same catalog. Re-exported
+# here so `sales.models.recurring_invoice.RecurringFrequency` and the
+# `sales.models` package export keep working unchanged.
+from core.enums import RecurringFrequency
 from core.models import TenantScopedModel
+from tax.enums import SupplyNature, SupplyType
 
-
-class RecurringFrequency(models.TextChoices):
-    WEEKLY = "weekly", "Weekly"
-    MONTHLY = "monthly", "Monthly"
-    QUARTERLY = "quarterly", "Quarterly"
-    YEARLY = "yearly", "Yearly"
+__all__ = [
+    "RecurringFrequency",
+    "RecurringInvoiceRun",
+    "RecurringInvoiceTemplate",
+    "RecurringInvoiceTemplateLine",
+]
 
 
 class RecurringInvoiceTemplate(TenantScopedModel):
@@ -31,6 +36,22 @@ class RecurringInvoiceTemplate(TenantScopedModel):
     next_run_at = models.DateField()
     is_active = models.BooleanField(default=True)
     due_days = models.PositiveIntegerField(default=0)
+
+    # --- GST treatment (Phase 7) ------------------------------------------
+    # Chosen once per document. `place_of_supply` defaults from the party but
+    # is the DOCUMENT's own field: the statutory answer (IGST Act ss.10-13)
+    # turns on facts about the individual supply that master data cannot know,
+    # and tax/services/determination.py deliberately does not infer it.
+    place_of_supply = models.ForeignKey(
+        "tax.StateCode", null=True, blank=True, on_delete=models.PROTECT, related_name="+"
+    )
+    supply_nature = models.CharField(
+        max_length=24, choices=SupplyNature.choices, default=SupplyNature.UNSPECIFIED
+    )
+    supply_type = models.CharField(
+        max_length=16, choices=SupplyType.choices, default=SupplyType.UNSPECIFIED
+    )
+    is_reverse_charge = models.BooleanField(default=False)
 
     receivable_account = models.ForeignKey("accounting.Account", on_delete=models.PROTECT, related_name="+")
     tax_payable_account = models.ForeignKey(
@@ -70,10 +91,11 @@ class RecurringInvoiceTemplateLine(TenantScopedModel):
     unit_price = models.DecimalField(max_digits=18, decimal_places=2)
     discount_percent = models.DecimalField(max_digits=5, decimal_places=2, default=Decimal("0"))
     tax_rate = models.DecimalField(max_digits=5, decimal_places=2, default=Decimal("0"))
+    cess_rate = models.DecimalField(max_digits=5, decimal_places=2, default=Decimal("0"))
 
     class Meta:
         constraints = [
-            models.CheckConstraint(check=models.Q(quantity__gt=0), name="recurring_line_quantity_positive"),
+            models.CheckConstraint(condition=models.Q(quantity__gt=0), name="recurring_line_quantity_positive"),
         ]
         indexes = [
             models.Index(fields=["template", "line_number"]),

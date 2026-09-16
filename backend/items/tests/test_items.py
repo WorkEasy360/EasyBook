@@ -1,4 +1,3 @@
-from decimal import Decimal
 
 from django.db import IntegrityError
 from django.test import TestCase
@@ -9,7 +8,7 @@ from core.exceptions import ApplicationError
 from core.tenancy import clear_tenant_context, tenant_context
 from core.tests.factories import make_org_with_owner
 from items.models.item import Item, ItemType
-from items.services.items import archive_item, create_item, update_item
+from items.services.items import archive_item, create_item
 from items.services.units import create_unit
 
 

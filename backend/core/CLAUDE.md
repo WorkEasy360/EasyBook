@@ -10,6 +10,7 @@ OWNS
 - `rls.py` — helpers for writing RLS-enabling migrations (`enable_rls_org_scoped`, `enable_rls_self_or_org_scoped`).
 - `views.py` — `OrganizationScopedMixin` (resolves + enforces `X-Organization-Id`), `AuthenticatedAPIView`, `HealthCheckView`.
 - `exceptions.py`, `pagination.py`, `logging.py`, `middleware.py`, `idempotency.py`.
+- `money.py` — `calculate_line`/`calculate_document_totals`, the ONE rounding policy every priced document in every module uses. `enums.py` — `PaymentMethod`, `RecurringFrequency`. `recurrence.py` — `advance_occurrence`. All three arrived here from `sales` when `purchases` needed them: a peer-to-peer purchases->sales import would couple two modules at the same layer, and a second copy would drift. Only promote something to `core` once a SECOND module genuinely needs it.
 
 DOES NOT OWN
 - Organization/User/Membership models (accounts).

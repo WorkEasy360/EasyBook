@@ -154,11 +154,11 @@ class InvoiceCreationTests(InvoiceTestsBase):
 
 class InvoicePostingTests(InvoiceTestsBase):
     def _post(self, **overrides):
-        kwargs = dict(
-            organization=self.org_a, customer=self.customer, invoice_date=datetime.date(2026, 4, 10),
-            due_date=datetime.date(2026, 5, 10), receivable_account=self.ar_account,
-            tax_payable_account=self.tax_account, lines=self._service_lines(tax_rate=Decimal("18")),
-        )
+        kwargs = {
+            "organization": self.org_a, "customer": self.customer, "invoice_date": datetime.date(2026, 4, 10),
+            "due_date": datetime.date(2026, 5, 10), "receivable_account": self.ar_account,
+            "tax_payable_account": self.tax_account, "lines": self._service_lines(tax_rate=Decimal("18")),
+        }
         kwargs.update(overrides)
         with tenant_context(organization_id=self.org_a.id):
             invoice = create_invoice(**kwargs)
@@ -177,14 +177,14 @@ class InvoicePostingTests(InvoiceTestsBase):
             journal = JournalEntry.objects.get(pk=posted.accounting_journal_id)
             self.assertEqual(journal.status, JournalStatus.POSTED)
             lines = list(journal.lines.all())
-            total_debit = sum((l.debit for l in lines), Decimal("0"))
-            total_credit = sum((l.credit for l in lines), Decimal("0"))
+            total_debit = sum((jl.debit for jl in lines), Decimal("0"))
+            total_credit = sum((jl.credit for jl in lines), Decimal("0"))
             self.assertEqual(total_debit, total_credit)
-            ar_line = next(l for l in lines if l.account_id == self.ar_account.id)
+            ar_line = next(jl for jl in lines if jl.account_id == self.ar_account.id)
             self.assertEqual(ar_line.debit, Decimal("236.00"))
-            revenue_line = next(l for l in lines if l.account_id == self.sales_account.id)
+            revenue_line = next(jl for jl in lines if jl.account_id == self.sales_account.id)
             self.assertEqual(revenue_line.credit, Decimal("200.00"))
-            tax_line = next(l for l in lines if l.account_id == self.tax_account.id)
+            tax_line = next(jl for jl in lines if jl.account_id == self.tax_account.id)
             self.assertEqual(tax_line.credit, Decimal("36.00"))
 
     def test_tax_snapshot_preserved_on_line(self):
@@ -269,8 +269,8 @@ class InvoiceStockIntegrationTests(InvoiceTestsBase):
 
             journal = JournalEntry.objects.get(pk=posted.accounting_journal_id)
             lines = list(journal.lines.all())
-            cogs_line = next(l for l in lines if l.account_id == self.cogs_account.id)
-            inv_line = next(l for l in lines if l.account_id == self.inventory_account.id)
+            cogs_line = next(jl for jl in lines if jl.account_id == self.cogs_account.id)
+            inv_line = next(jl for jl in lines if jl.account_id == self.inventory_account.id)
             self.assertEqual(cogs_line.debit, Decimal("100.00"))  # 10 units * 10.00 cost
             self.assertEqual(inv_line.credit, Decimal("100.00"))
 
@@ -313,7 +313,7 @@ class InvoiceStockIntegrationTests(InvoiceTestsBase):
 
             # COGS is still posted, using the historical cost basis.
             journal = JournalEntry.objects.get(pk=posted.accounting_journal_id)
-            cogs_line = next(l for l in journal.lines.all() if l.account_id == self.cogs_account.id)
+            cogs_line = next(jl for jl in journal.lines.all() if jl.account_id == self.cogs_account.id)
             self.assertEqual(cogs_line.debit, Decimal("100.00"))
 
     def test_invoice_quantity_exceeding_delivered_quantity_rejected(self):

@@ -1,0 +1,150 @@
+name: Backend CI
+
+# The gate described in the build spec, as far as it can run without cloud
+# credentials: lint -> security -> dependency audit -> migration drift ->
+# the full test suite (unit, integration, API, RLS, concurrency, E2E).
+# Image build, container scan and staged deploy are deliberately absent until
+# the infrastructure phase introduces a registry and an environment to deploy
+# to; adding them now would mean a pipeline that cannot actually be green.
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+# A second push to the same branch cancels the first — a financial test suite
+# is slow enough that queued duplicate runs are pure waste.
+concurrency:
+  group: backend-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    working-directory: backend
+
+jobs:
+  # Fast feedback: fails in seconds, so a formatting slip never waits behind
+  # a three-minute database suite.
+  static:
+    name: Lint, security, dependency audit
+    runs-on: ubuntu-latest
+    steps:
+      # Actions are pinned to immutable commit SHAs, not tags: a tag can be
+      # repointed by whoever owns the action, which is a supply-chain hole in
+      # a pipeline that handles a financial codebase.
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09  # v5
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6
+        with:
+          python-version: '3.10'
+          cache: pip
+          cache-dependency-path: backend/requirements-dev.txt
+
+      - name: Install tooling
+        run: pip install -r requirements-dev.txt
+
+      - name: Ruff
+        run: ruff check --output-format=github .
+
+      - name: Bandit
+        run: bandit -c pyproject.toml -r . -q
+
+      - name: Dependency audit
+        run: pip-audit -r requirements.txt --progress-spinner off
+
+  test:
+    name: Tests (Postgres 16 + Redis)
+    runs-on: ubuntu-latest
+
+    services:
+      # A real Postgres, never SQLite: the RLS tests execute actual policies,
+      # and the concurrency tests need real row locks. See backend/CLAUDE.md.
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: easybook
+          POSTGRES_USER: easybook
+          POSTGRES_PASSWORD: easybook
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      redis:
+        image: redis:7
+        ports: ['6379:6379']
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      # Django connects as easybook_app, NOT the POSTGRES_USER superuser.
+      # A superuser bypasses RLS unconditionally, so running CI as one would
+      # make every tenant-isolation test pass for the wrong reason — the exact
+      # failure mode those tests exist to catch.
+      DB_NAME: easybook
+      DB_USER: easybook_app
+      DB_PASSWORD: easybook_app
+      DB_HOST: localhost
+      DB_PORT: '5432'
+      REDIS_URL: redis://localhost:6379/0
+      SECRET_KEY: ci-only-not-a-real-secret
+      DJANGO_SETTINGS_MODULE: config.settings.test
+
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09  # v5
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6
+        with:
+          python-version: '3.10'
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Create the non-superuser application role
+        # Mirrors infrastructure/postgres-init/01-app-role.sql, which the
+        # local docker-compose Postgres runs automatically but a CI service
+        # container does not. CREATEDB is required for the test database.
+        env:
+          PGPASSWORD: easybook
+        run: |
+          psql -h localhost -U easybook -d easybook -v ON_ERROR_STOP=1 <<'SQL'
+          DO $$
+          BEGIN
+             IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'easybook_app') THEN
+                CREATE ROLE easybook_app WITH LOGIN PASSWORD 'easybook_app' CREATEDB;
+             END IF;
+          END
+          $$;
+          GRANT ALL PRIVILEGES ON DATABASE easybook TO easybook_app;
+          GRANT CREATE, USAGE ON SCHEMA public TO easybook_app;
+          SQL
+
+      - name: Assert the CI database role is not a superuser
+        # Guards the guard: if this role ever gains superuser, every RLS test
+        # silently stops testing anything.
+        env:
+          PGPASSWORD: easybook_app
+        run: |
+          IS_SUPER=$(psql -h localhost -U easybook_app -d easybook -tAc \
+            "SELECT rolsuper FROM pg_roles WHERE rolname = 'easybook_app'")
+          echo "easybook_app rolsuper=$IS_SUPER"
+          test "$IS_SUPER" = "f"
+
+      - name: Migration drift
+        # A model change without a migration passes every other check here and
+        # then fails on deploy.
+        run: python manage.py makemigrations --check --dry-run --settings=config.settings.dev
+
+      - name: Django system checks
+        run: python manage.py check --settings=config.settings.test
+
+      - name: Test suite
+        run: python manage.py test --settings=config.settings.test --verbosity=2

@@ -10,6 +10,7 @@ from accounts.services import allocate_sequence_number
 from audit.models import AuditLog
 from audit.services import record as record_audit
 from core.exceptions import ApplicationError
+from core.money import calculate_document_totals
 from inventory.models.stock_movement import MovementType, StockMovement
 from inventory.selectors import get_weighted_average_cost
 from inventory.services.movements import record_stock_movement
@@ -19,9 +20,12 @@ from sales.models.customer import Customer
 from sales.models.delivery import DeliveryChallanLine
 from sales.models.invoice import Invoice, InvoiceLine, InvoiceStatus
 from sales.models.quote import Quote, QuoteStatus
-from sales.services.calculations import calculate_document_totals
 from sales.services.customers import assert_customer_usable_for_new_transaction
 from sales.services.line_items import build_line_snapshot
+from tax.enums import SupplyNature
+from tax.services.computation import apply_tax_components, component_totals, compute_withholding
+from tax.services.documents import carry_forward_tax, resolve_document_tax
+from tax.services.posting import build_output_tax_lines
 
 INVOICE_NUMBER_SEQUENCE_KEY = "invoice"
 
@@ -35,8 +39,17 @@ def _validate_account(*, organization, account, expected_type, field_name):
         )
 
 
-def _build_invoice_line_row(*, organization, invoice_warehouse, line: dict, line_number: int) -> dict:
+def _build_invoice_line_row(
+    *, organization, invoice_warehouse, line: dict, line_number: int,
+    supply_nature: str = SupplyNature.UNSPECIFIED,
+) -> dict:
     row = build_line_snapshot(organization=organization, line=line, line_number=line_number)
+    # The GST split rides on top of the shared snapshot rather than inside it:
+    # only documents that post carry component columns (see
+    # tax.services.computation.apply_tax_components).
+    row = apply_tax_components(
+        row, supply_nature=supply_nature, cess_rate=line.get("cess_rate", Decimal("0"))
+    )
     item = row["item"]
     source_delivery_challan_line = line.get("source_delivery_challan_line")
 
@@ -95,6 +108,10 @@ def create_invoice(
     notes: str = "",
     terms: str = "",
     source_quote: Quote | None = None,
+    place_of_supply=None,
+    is_reverse_charge: bool = False,
+    withholding_section=None,
+    tax_treatment: dict | None = None,
     actor=None,
 ) -> Invoice:
     if customer.organization_id != organization.id:
@@ -115,11 +132,21 @@ def create_invoice(
         raise ApplicationError("An invoice needs at least one line.", code="invoice_no_lines")
 
     currency = currency or customer.currency
+    tax_treatment = tax_treatment or resolve_document_tax(
+        organization=organization, party=customer, place_of_supply=place_of_supply
+    )
     line_rows = [
-        _build_invoice_line_row(organization=organization, invoice_warehouse=warehouse, line=line, line_number=index)
+        _build_invoice_line_row(
+            organization=organization, invoice_warehouse=warehouse, line=line, line_number=index,
+            supply_nature=tax_treatment["supply_nature"],
+        )
         for index, line in enumerate(lines, start=1)
     ]
     totals = calculate_document_totals(line_rows)
+    components = component_totals(line_rows)
+    withholding = compute_withholding(
+        base_amount=totals["subtotal"] - totals["discount"], section=withholding_section
+    )
 
     invoice = Invoice.objects.create(
         organization=organization,
@@ -137,9 +164,14 @@ def create_invoice(
         discount_total=totals["discount"],
         tax_total=totals["tax"],
         total=totals["total"],
+        withholding_section=withholding_section,
+        withholding_amount=withholding,
         notes=notes,
         terms=terms,
         created_by=actor,
+        is_reverse_charge=is_reverse_charge,
+        **components,
+        **tax_treatment,
     )
     for row in line_rows:
         InvoiceLine.objects.create(organization=organization, invoice=invoice, **row)
@@ -182,9 +214,13 @@ def convert_quote_to_invoice(
         for line in quote.lines.all()
     ]
 
+    carried = carry_forward_tax(quote)
+    carried.pop("is_reverse_charge", None)
+
     return create_invoice(
         organization=quote.organization,
         customer=quote.customer,
+        tax_treatment=carried,
         invoice_date=invoice_date,
         due_date=due_date,
         lines=lines,
@@ -212,11 +248,13 @@ def replace_invoice_lines(*, invoice: Invoice, lines: list[dict], actor=None) ->
 
     line_rows = [
         _build_invoice_line_row(
-            organization=invoice.organization, invoice_warehouse=invoice.warehouse, line=line, line_number=index
+            organization=invoice.organization, invoice_warehouse=invoice.warehouse, line=line,
+            line_number=index, supply_nature=invoice.supply_nature,
         )
         for index, line in enumerate(lines, start=1)
     ]
     totals = calculate_document_totals(line_rows)
+    components = component_totals(line_rows)
 
     invoice.lines.all().delete()
     for row in line_rows:
@@ -226,7 +264,17 @@ def replace_invoice_lines(*, invoice: Invoice, lines: list[dict], actor=None) ->
     invoice.discount_total = totals["discount"]
     invoice.tax_total = totals["tax"]
     invoice.total = totals["total"]
-    invoice.save(update_fields=["subtotal", "discount_total", "tax_total", "total", "updated_at"])
+    for field, value in components.items():
+        setattr(invoice, field, value)
+    invoice.withholding_amount = compute_withholding(
+        base_amount=totals["subtotal"] - totals["discount"], section=invoice.withholding_section
+    )
+    invoice.save(
+        update_fields=[
+            "subtotal", "discount_total", "tax_total", "total",
+            *components.keys(), "withholding_amount", "updated_at",
+        ]
+    )
 
     record_audit(
         organization_id=invoice.organization_id,
@@ -261,8 +309,10 @@ def post_invoice(*, invoice_id, organization, actor=None) -> Invoice:
     )
     if not lines:
         raise ApplicationError("Cannot post an invoice with no lines.", code="invoice_no_lines")
-    if invoice.tax_total > 0 and invoice.tax_payable_account_id is None:
-        raise ApplicationError("tax_payable_account is required to post an invoice with tax.", code="tax_account_required")
+    # The tax-account requirement is checked by build_output_tax_lines below:
+    # an organization that has mapped every component does not need a
+    # document-level account at all, so demanding one here would refuse a
+    # correctly-configured invoice.
 
     revenue_by_account = defaultdict(lambda: Decimal("0"))
     cogs_by_pair = defaultdict(lambda: Decimal("0"))
@@ -306,12 +356,25 @@ def post_invoice(*, invoice_id, organization, actor=None) -> Invoice:
             cogs_amount = (line.quantity * unit_cost).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
             cogs_by_pair[(item.cogs_account_id, item.inventory_account_id)] += cogs_amount
 
-    journal_lines = [{"account_id": invoice.receivable_account_id, "debit": invoice.total}]
+    # TCS is collected FROM the customer on top of the invoice, so it raises
+    # what they owe: the receivable carries it, and the collected amount sits
+    # as a liability until it is remitted.
+    receivable_amount = invoice.total + invoice.withholding_amount
+    journal_lines = [{"account_id": invoice.receivable_account_id, "debit": receivable_amount}]
     for account_id, amount in revenue_by_account.items():
         if amount != 0:
             journal_lines.append({"account_id": account_id, "credit": amount})
-    if invoice.tax_total > 0:
-        journal_lines.append({"account_id": invoice.tax_payable_account_id, "credit": invoice.tax_total})
+    journal_lines.extend(
+        build_output_tax_lines(
+            organization=organization,
+            document=invoice,
+            fallback_account_id=invoice.tax_payable_account_id,
+        )
+    )
+    if invoice.withholding_amount > 0:
+        journal_lines.append(
+            {"account_id": invoice.withholding_section.account_id, "credit": invoice.withholding_amount}
+        )
     for (cogs_account_id, inventory_account_id), amount in cogs_by_pair.items():
         if amount == 0:
             continue

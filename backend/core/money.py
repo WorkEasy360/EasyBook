@@ -1,9 +1,16 @@
 """The single reusable line/document total calculation service (see root
-CLAUDE.md and sales/CLAUDE.md — rounding logic must not be duplicated across
-serializers/models/views, and totals are never trusted from the client).
+CLAUDE.md - rounding logic must not be duplicated across modules,
+serializers, models or views, and totals are never trusted from the client).
 
-Every sales document (Quote, SalesOrder, Invoice, CreditNote, ...) computes
-its line and header totals through these two functions only.
+Lives in `core` rather than in one domain app because it is pure Decimal
+money math with no domain concepts in it: every priced document in every
+module - sales (Quote, SalesOrder, Invoice, CreditNote) and purchases
+(PurchaseOrder, Bill, VendorCredit) alike - computes its line and header
+totals through these two functions only. It started life in
+`sales/services/calculations.py` and moved here when `purchases` needed it:
+a sideways purchases -> sales import would couple two peer modules (root
+CLAUDE.md module dependency rule), and copying the rounding policy into a
+second module is exactly what the "one rounding policy" rule forbids.
 """
 
 from decimal import ROUND_HALF_UP, Decimal
@@ -13,8 +20,20 @@ from core.exceptions import ApplicationError
 MONEY_QUANTUM = Decimal("0.01")
 
 
-def _round_money(value: Decimal) -> Decimal:
+def round_money(value: Decimal) -> Decimal:
+    """The single money-rounding policy: 2 dp, ROUND_HALF_UP.
+
+    Public because `tax.services.computation` splits an already-rounded line
+    tax into CGST/SGST/IGST/cess and must round the halves the same way this
+    module rounds everything else. A second `quantize` over there would be a
+    second rounding policy in all but name - exactly what this module exists
+    to prevent (see the module docstring).
+    """
     return value.quantize(MONEY_QUANTUM, rounding=ROUND_HALF_UP)
+
+
+# Retained so the existing call sites in this module read unchanged.
+_round_money = round_money
 
 
 def calculate_line(

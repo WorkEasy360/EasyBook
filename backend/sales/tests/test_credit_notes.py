@@ -136,11 +136,11 @@ class CreditNoteAgainstInvoiceTests(CreditNoteTestsBase):
             issued = issue_credit_note(credit_note_id=credit_note.id, organization=self.org_a)
             journal = JournalEntry.objects.get(pk=issued.accounting_journal_id)
             lines = list(journal.lines.all())
-            total_debit = sum((l.debit for l in lines), Decimal("0"))
-            total_credit = sum((l.credit for l in lines), Decimal("0"))
+            total_debit = sum((jl.debit for jl in lines), Decimal("0"))
+            total_credit = sum((jl.credit for jl in lines), Decimal("0"))
             self.assertEqual(total_debit, total_credit)
-            revenue_line = next(l for l in lines if l.account_id == self.sales_account.id)
-            ar_line = next(l for l in lines if l.account_id == self.ar_account.id)
+            revenue_line = next(jl for jl in lines if jl.account_id == self.sales_account.id)
+            ar_line = next(jl for jl in lines if jl.account_id == self.ar_account.id)
             self.assertEqual(revenue_line.debit, Decimal("40.00"))
             self.assertEqual(ar_line.credit, Decimal("40.00"))
 
@@ -166,7 +166,7 @@ class CreditNoteAgainstInvoiceTests(CreditNoteTestsBase):
             )
             issued = issue_credit_note(credit_note_id=credit_note.id, organization=self.org_a)
             journal = JournalEntry.objects.get(pk=issued.accounting_journal_id)
-            credit_line = next(l for l in journal.lines.all() if l.account_id == self.credit_account.id)
+            credit_line = next(jl for jl in journal.lines.all() if jl.account_id == self.credit_account.id)
             self.assertEqual(credit_line.credit, Decimal("30.00"))
             # AR untouched below zero — invoice due stays exactly at 0, not negative.
             self.assertEqual(get_invoice_amount_due(invoice=invoice), Decimal("0.00"))
@@ -246,8 +246,8 @@ class CreditNoteRestockTests(CreditNoteTestsBase):
             self.assertEqual(get_stock_on_hand(item=self.product_item, warehouse=self.warehouse), Decimal("100"))
             journal = JournalEntry.objects.get(pk=issued.accounting_journal_id)
             lines = list(journal.lines.all())
-            inv_line = next(l for l in lines if l.account_id == self.inventory_account.id)
-            cogs_line = next(l for l in lines if l.account_id == self.cogs_account.id)
+            inv_line = next(jl for jl in lines if jl.account_id == self.inventory_account.id)
+            cogs_line = next(jl for jl in lines if jl.account_id == self.cogs_account.id)
             self.assertEqual(inv_line.debit, Decimal("100.00"))
             self.assertEqual(cogs_line.credit, Decimal("100.00"))
 
@@ -306,7 +306,7 @@ class CreditNoteStandaloneTests(CreditNoteTestsBase):
             issued = issue_credit_note(credit_note_id=credit_note.id, organization=self.org_a)
             self.assertIsNone(issued.source_invoice_id)
             journal = JournalEntry.objects.get(pk=issued.accounting_journal_id)
-            credit_line = next(l for l in journal.lines.all() if l.account_id == self.credit_account.id)
+            credit_line = next(jl for jl in journal.lines.all() if jl.account_id == self.credit_account.id)
             self.assertEqual(credit_line.credit, Decimal("25.00"))
 
 

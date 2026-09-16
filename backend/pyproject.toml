@@ -1,0 +1,73 @@
+# Tooling configuration only — this project is not a distributable package,
+# so there is deliberately no [project] table and no build backend.
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+extend-exclude = [".venv", "staticfiles", "*/migrations/*"]
+
+[tool.ruff.lint]
+# Chosen for signal, not coverage. Each family earns its place:
+#   E,W,F  pycodestyle/pyflakes — real errors and dead code
+#   I      import ordering — the thing most likely to churn diffs otherwise
+#   UP     pyupgrade — keeps us on py310+ idioms
+#   B      bugbear — the mutable-default and loop-variable-capture class of bug
+#   C4     comprehension rewrites
+#   DJ     Django-specific (e.g. null=True on CharField)
+#   S      bandit rules reachable from the AST — overlaps `bandit` itself but
+#          runs in-editor, which is where it actually changes behaviour
+#   RUF    ruff's own checks
+select = ["E", "W", "F", "I", "UP", "B", "C4", "DJ", "S", "RUF"]
+
+ignore = [
+    # Long lines are handled by line-length; E501 double-reports.
+    "E501",
+    # `assert` is how tests assert. S101 in tests is noise, and the
+    # per-file ignore below is not enough because service-layer invariant
+    # asserts are also intentional.
+    "S101",
+    # We raise ApplicationError from inside `except` blocks deliberately, to
+    # convert a framework/DB exception into a domain error with a stable
+    # code. `raise ... from` would leak internals into the API envelope.
+    "B904",
+    # RUF012 wants ClassVar on every mutable class attribute. In a Django/DRF
+    # codebase that means annotating `list_display`, `Meta.fields`,
+    # `permission_classes`, `constraints`, `indexes` and every other
+    # framework-declared list — 366 findings, none of them a bug, because the
+    # framework reads these as declarations and never mutates them. Real
+    # shared-mutable-state bugs in this codebase would be caught by B006
+    # (mutable argument defaults), which stays on.
+    "RUF012",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Migrations are generated; they are excluded above, but keep this explicit
+# in case the exclusion is ever relaxed.
+"**/migrations/**" = ["E", "W", "F", "I", "UP", "B", "C4", "DJ", "RUF"]
+# Tests legitimately use hardcoded credentials in fixtures (S105/S106) and
+# broad excepts when proving a race fails cleanly (BLE/S110).
+"**/tests/**" = ["S105", "S106", "S311"]
+"**/tests/factories.py" = ["S105", "S106", "S107"]
+# Settings modules re-export and conditionally assign; both confuse F401/F405.
+"**/config/settings/*.py" = ["F401", "F403", "F405"]
+
+[tool.ruff.lint.isort]
+known-first-party = [
+    "accounting", "accounts", "audit", "authz", "config",
+    "core", "inventory", "items", "purchases", "sales",
+]
+
+[tool.bandit]
+# Ruff's S rules cover the same ground in-editor; `bandit` runs in CI as the
+# independent second opinion.
+#
+# Test directories are excluded rather than globally skipping B105/B106/B107.
+# Those three fire on every fixture password, which is what a fixture is for —
+# but skipping them GLOBALLY would blind bandit to a genuine hardcoded
+# credential in production code, which is the whole reason it is here. Tests
+# are still covered by ruff's S rules (see per-file-ignores above); this
+# exclusion only narrows bandit's second opinion to the code that ships.
+exclude_dirs = [".venv", "staticfiles", "tests"]
+skips = [
+    "B101",  # assert_used — see the ruff S101 note above
+]

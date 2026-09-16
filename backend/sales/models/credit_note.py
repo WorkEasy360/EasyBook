@@ -4,6 +4,7 @@ from django.conf import settings
 from django.db import models
 
 from core.models import TenantScopedModel
+from tax.enums import SupplyNature, SupplyType
 
 
 class CreditNoteStatus(models.TextChoices):
@@ -70,9 +71,45 @@ class CreditNote(TenantScopedModel):
         "accounting.JournalEntry", null=True, blank=True, on_delete=models.PROTECT, related_name="+"
     )
 
+    # --- GST treatment (Phase 7) ------------------------------------------
+    # Chosen once per document and carried through conversion, so a quote
+    # accepted in one quarter and invoiced in the next cannot silently change
+    # its tax treatment when the customer's master data is edited in between.
+    #
+    # `place_of_supply` defaults from the party but is the DOCUMENT's own
+    # field: the statutory answer (IGST Act ss.10-13) turns on facts about the
+    # individual supply that master data cannot know, and
+    # tax/services/determination.py deliberately does not infer it.
+    place_of_supply = models.ForeignKey(
+        "tax.StateCode", null=True, blank=True, on_delete=models.PROTECT, related_name="+"
+    )
+    # What tax applies - the computed answer to IGST Act ss.7/8, and the only
+    # field the component split branches on.
+    supply_nature = models.CharField(
+        max_length=24, choices=SupplyNature.choices, default=SupplyNature.UNSPECIFIED
+    )
+    # The e-Invoice schema's TranDtls.SupTyp, snapshotted at document time
+    # rather than re-derived at payload time. Deriving it later would read the
+    # counterparty's CURRENT tax treatment, which can have changed since the
+    # document was issued - the same reason this file already snapshots
+    # hsn_sac_snapshot and tax_label instead of following the FK.
+    supply_type = models.CharField(
+        max_length=16, choices=SupplyType.choices, default=SupplyType.UNSPECIFIED
+    )
+    is_reverse_charge = models.BooleanField(default=False)
+
     subtotal = models.DecimalField(max_digits=18, decimal_places=2, default=Decimal("0"))
     discount_total = models.DecimalField(max_digits=18, decimal_places=2, default=Decimal("0"))
     tax_total = models.DecimalField(max_digits=18, decimal_places=2, default=Decimal("0"))
+    # GST component totals. Sums of the already-rounded per-line component
+    # amounts, never a second rounding of the header - so line and header
+    # totals agree to the cent by construction (same rule as
+    # core.money.calculate_document_totals).
+    cgst_total = models.DecimalField(max_digits=18, decimal_places=2, default=Decimal("0"))
+    sgst_total = models.DecimalField(max_digits=18, decimal_places=2, default=Decimal("0"))
+    igst_total = models.DecimalField(max_digits=18, decimal_places=2, default=Decimal("0"))
+    cess_total = models.DecimalField(max_digits=18, decimal_places=2, default=Decimal("0"))
+
     total = models.DecimalField(max_digits=18, decimal_places=2, default=Decimal("0"))
     # Set once, at issue time, by services/invoices.py::issue_credit_note —
     # the split between "netted against source_invoice's remaining balance"
@@ -154,6 +191,18 @@ class CreditNoteLine(TenantScopedModel):
     unit_price = models.DecimalField(max_digits=18, decimal_places=2)
     discount_percent = models.DecimalField(max_digits=5, decimal_places=2, default=Decimal("0"))
     tax_rate = models.DecimalField(max_digits=5, decimal_places=2, default=Decimal("0"))
+    cess_rate = models.DecimalField(max_digits=5, decimal_places=2, default=Decimal("0"))
+
+    # The GST split of this line's `tax_amount`. Stored rather than derived at
+    # read time because GSTR-1 Table 12 reports taxable value and each
+    # component HSN-wise, and re-deriving them in the report would put a second
+    # copy of the rounding policy there. The invariant
+    # `cgst + sgst + igst + cess == tax_amount` is enforced by a check
+    # constraint below and guaranteed by tax.services.computation.split_tax.
+    cgst_amount = models.DecimalField(max_digits=18, decimal_places=2, default=Decimal("0"))
+    sgst_amount = models.DecimalField(max_digits=18, decimal_places=2, default=Decimal("0"))
+    igst_amount = models.DecimalField(max_digits=18, decimal_places=2, default=Decimal("0"))
+    cess_amount = models.DecimalField(max_digits=18, decimal_places=2, default=Decimal("0"))
 
     line_base = models.DecimalField(max_digits=18, decimal_places=2)
     discount_amount = models.DecimalField(max_digits=18, decimal_places=2)
@@ -168,7 +217,24 @@ class CreditNoteLine(TenantScopedModel):
 
     class Meta:
         constraints = [
-            models.CheckConstraint(check=models.Q(quantity__gt=0), name="credit_note_line_quantity_positive"),
+            models.CheckConstraint(condition=models.Q(quantity__gt=0), name="credit_note_line_quantity_positive"),
+            # The component invariant: a line either carries NO GST split
+            # (legacy rows and documents with no determined supply nature) or
+            # its components sum EXACTLY to its own tax_amount. Anything
+            # between the two is a line whose journal cannot balance, so it is
+            # refused by the database rather than caught downstream.
+            models.CheckConstraint(
+                condition=(
+                    models.Q(cgst_amount=0, sgst_amount=0, igst_amount=0, cess_amount=0)
+                    | models.Q(
+                        tax_amount=models.F("cgst_amount")
+                        + models.F("sgst_amount")
+                        + models.F("igst_amount")
+                        + models.F("cess_amount")
+                    )
+                ),
+                name="credit_note_line_tax_components_sum_to_tax_amount",
+            ),
         ]
         indexes = [
             models.Index(fields=["credit_note", "line_number"]),

@@ -50,8 +50,19 @@ class Item(TenantScopedModel):
     hsn_sac_code = models.ForeignKey(
         "items.HsnSacCode", null=True, blank=True, on_delete=models.PROTECT, related_name="+"
     )
-    # Freeform label only — no tax-rate table exists; GST rate logic is out of
-    # scope for this phase (see root CLAUDE.md: don't invent compliance rules).
+    # The item's default GST rate, from Phase 7's rate table. A DEFAULT: every
+    # priced line still snapshots the numeric rate onto itself at document
+    # time (see the `tax_rate` column on each line model), so editing or
+    # archiving the rate this points at can never reach back into a posted
+    # document.
+    tax_rate = models.ForeignKey(
+        "tax.TaxRate", null=True, blank=True, on_delete=models.PROTECT, related_name="+"
+    )
+    # The pre-Phase-7 freeform label. Retained deliberately: it is what every
+    # existing line's `tax_label` snapshot was copied from, and it still feeds
+    # that snapshot for organizations that have not configured rates. Folding
+    # it into `tax_rate.name` would rewrite historical snapshots, so the two
+    # coexist and `tax_rate` wins when set.
     tax_category = models.CharField(max_length=64, blank=True)
 
     class Meta:
@@ -60,7 +71,7 @@ class Item(TenantScopedModel):
                 fields=["organization", "sku"], name="uniq_item_sku_per_org", condition=~models.Q(sku="")
             ),
             models.CheckConstraint(
-                check=~(models.Q(item_type=ItemType.SERVICE) & models.Q(track_inventory=True)),
+                condition=~(models.Q(item_type=ItemType.SERVICE) & models.Q(track_inventory=True)),
                 name="service_item_cannot_track_inventory",
             ),
         ]

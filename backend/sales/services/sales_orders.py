@@ -6,12 +6,13 @@ from accounts.services import allocate_sequence_number
 from audit.models import AuditLog
 from audit.services import record as record_audit
 from core.exceptions import ApplicationError
+from core.money import calculate_document_totals
 from sales.models.customer import Customer
 from sales.models.quote import Quote, QuoteStatus
 from sales.models.sales_order import SalesOrder, SalesOrderLine, SalesOrderStatus
-from sales.services.calculations import calculate_document_totals
 from sales.services.customers import assert_customer_usable_for_new_transaction
 from sales.services.line_items import build_line_snapshot
+from tax.services.documents import carry_forward_tax, resolve_document_tax
 
 SALES_ORDER_NUMBER_SEQUENCE_KEY = "sales_order"
 
@@ -44,6 +45,8 @@ def create_sales_order(
     notes: str = "",
     terms: str = "",
     source_quote: Quote | None = None,
+    place_of_supply=None,
+    tax_treatment: dict | None = None,
     actor=None,
 ) -> SalesOrder:
     if customer.organization_id != organization.id:
@@ -53,6 +56,9 @@ def create_sales_order(
         raise ApplicationError("A sales order needs at least one line.", code="sales_order_no_lines")
 
     currency = currency or customer.currency
+    tax_treatment = tax_treatment or resolve_document_tax(
+        organization=organization, party=customer, place_of_supply=place_of_supply
+    )
 
     order_number = allocate_sequence_number(
         organization_id=organization.id, key=SALES_ORDER_NUMBER_SEQUENCE_KEY, prefix="SO-"
@@ -76,6 +82,7 @@ def create_sales_order(
         discount_total=totals["discount"],
         tax_total=totals["tax"],
         total=totals["total"],
+        **tax_treatment,
         notes=notes,
         terms=terms,
     )
@@ -118,11 +125,18 @@ def convert_quote_to_sales_order(*, quote: Quote, order_date, actor=None) -> Sal
         for line in quote.lines.all()
     ]
 
+    # The quote's treatment is COPIED, not re-determined: the customer's
+    # master data may have changed between quoting and acceptance, and the tax
+    # the customer was quoted is the tax they should be ordered under.
+    carried = carry_forward_tax(quote)
+    carried.pop("is_reverse_charge", None)
+
     return create_sales_order(
         organization=quote.organization,
         customer=quote.customer,
         order_date=order_date,
         lines=lines,
+        tax_treatment=carried,
         currency=quote.currency,
         exchange_rate=quote.exchange_rate,
         notes=quote.notes,

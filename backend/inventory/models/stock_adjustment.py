@@ -104,7 +104,7 @@ class StockAdjustmentLine(TenantScopedModel):
 
     class Meta:
         constraints = [
-            models.CheckConstraint(check=models.Q(quantity__gt=0), name="adjustment_line_quantity_positive"),
+            models.CheckConstraint(condition=models.Q(quantity__gt=0), name="adjustment_line_quantity_positive"),
         ]
         indexes = [
             models.Index(fields=["adjustment", "line_number"]),

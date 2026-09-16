@@ -16,7 +16,7 @@ DEPENDENCIES
 INVARIANTS
 - Call `audit.services.record()` AFTER the mutation it describes has committed (or within the same DB transaction, never speculatively before) — an audit entry for something that got rolled back is worse than no entry.
 - Never call `AuditLog.objects.create()` directly from another app — always go through `audit.services.record()`, which self-scopes the tenant context so it works from requests, Celery tasks, and management commands alike.
-- `AuditLog` rows are immutable after creation — do not add an update path, a "soft edit", or a bulk-delete/retention job without an explicit product decision (retention/compliance requirements will come from Phase 7 GST work and should be a deliberate addition here, not an ad hoc one).
+- `AuditLog` rows are immutable after creation — do not add an update path, a "soft edit", or a bulk-delete/retention job without an explicit product decision. Phase 7's GST work is now in (`tax`/`compliance`) and deliberately did NOT add a retention policy here: GST record-keeping requirements are about how long an organization must PRESERVE filings and source documents, which argues against deleting audit history, not for a purge job. `compliance.EInvoiceDocument`/`EWayBill` follow the same append-only, never-deleted shape as `AuditLog` for exactly this reason (`compliance/CLAUDE.md`). Retention/archival, if ever needed, remains a distinct future decision.
 
 TESTS
 `audit/tests/test_audit_log.py` — append-only enforcement, per-organization isolation.

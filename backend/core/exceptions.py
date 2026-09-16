@@ -1,3 +1,4 @@
+import contextlib
 import logging
 import uuid
 
@@ -37,10 +38,11 @@ def api_exception_handler(exc, context):
 
     code = getattr(exc, "default_code", None) or getattr(exc, "code", None) or "error"
     if hasattr(exc, "get_codes"):
-        try:
+        # Defensive: a malformed/partially-built DRF exception can raise here.
+        # The envelope must still render, so fall back to the `code` resolved
+        # above rather than letting the error handler itself error.
+        with contextlib.suppress(Exception):
             code = exc.get_codes()
-        except Exception:  # pragma: no cover - defensive
-            pass
 
     response.data = {
         "error": {

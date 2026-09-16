@@ -3,6 +3,7 @@ from decimal import Decimal
 from django.db import models
 
 from core.models import TenantScopedModel
+from tax.enums import SupplyNature, SupplyType
 
 
 class QuoteStatus(models.TextChoices):
@@ -35,6 +36,33 @@ class Quote(TenantScopedModel):
 
     currency = models.ForeignKey("accounts.Currency", on_delete=models.PROTECT, related_name="+")
     exchange_rate = models.DecimalField(max_digits=18, decimal_places=8, default=Decimal("1"))
+
+    # --- GST treatment (Phase 7) ------------------------------------------
+    # Chosen once per document and carried through conversion, so a quote
+    # accepted in one quarter and invoiced in the next cannot silently change
+    # its tax treatment when the customer's master data is edited in between.
+    #
+    # `place_of_supply` defaults from the party but is the DOCUMENT's own
+    # field: the statutory answer (IGST Act ss.10-13) turns on facts about the
+    # individual supply that master data cannot know, and
+    # tax/services/determination.py deliberately does not infer it.
+    place_of_supply = models.ForeignKey(
+        "tax.StateCode", null=True, blank=True, on_delete=models.PROTECT, related_name="+"
+    )
+    # What tax applies - the computed answer to IGST Act ss.7/8, and the only
+    # field the component split branches on.
+    supply_nature = models.CharField(
+        max_length=24, choices=SupplyNature.choices, default=SupplyNature.UNSPECIFIED
+    )
+    # The e-Invoice schema's TranDtls.SupTyp, snapshotted at document time
+    # rather than re-derived at payload time. Deriving it later would read the
+    # counterparty's CURRENT tax treatment, which can have changed since the
+    # document was issued - the same reason this file already snapshots
+    # hsn_sac_snapshot and tax_label instead of following the FK.
+    supply_type = models.CharField(
+        max_length=16, choices=SupplyType.choices, default=SupplyType.UNSPECIFIED
+    )
+    is_reverse_charge = models.BooleanField(default=False)
 
     # Recalculated server-side from lines on every create/replace — never
     # client-writable directly (root CLAUDE.md: never trust client totals).
@@ -109,7 +137,7 @@ class QuoteLine(TenantScopedModel):
 
     class Meta:
         constraints = [
-            models.CheckConstraint(check=models.Q(quantity__gt=0), name="quote_line_quantity_positive"),
+            models.CheckConstraint(condition=models.Q(quantity__gt=0), name="quote_line_quantity_positive"),
         ]
         indexes = [
             models.Index(fields=["quote", "line_number"]),

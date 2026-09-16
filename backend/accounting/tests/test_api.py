@@ -1,5 +1,4 @@
 import datetime
-from decimal import Decimal
 
 from rest_framework.test import APITestCase
 
@@ -46,6 +45,9 @@ class AccountingAPITests(APITestCase):
         self.client.force_authenticate(user=self.owner_a)
         response = self.client.get("/api/v1/accounting/accounts/", **self._headers(self.org_a))
         codes = {a["code"] for a in response.data["results"]}
+        # Org A's own accounts, and only those. The set assertion is the
+        # point of the test — it was computed but never checked.
+        self.assertEqual(codes, {"1000", "4000"})
         self.assertNotIn(self.cash_b.id, [a["id"] for a in response.data["results"]])
         self.assertEqual(len(response.data["results"]), 2)
 

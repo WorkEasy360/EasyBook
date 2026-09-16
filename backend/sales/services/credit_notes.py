@@ -10,6 +10,7 @@ from accounts.services import allocate_sequence_number
 from audit.models import AuditLog
 from audit.services import record as record_audit
 from core.exceptions import ApplicationError
+from core.money import calculate_document_totals
 from inventory.models.stock_movement import MovementType
 from inventory.services.movements import record_stock_movement
 from items.models.item import ItemType
@@ -18,9 +19,12 @@ from sales.models.credit_note import CreditNote, CreditNoteLine, CreditNoteStatu
 from sales.models.customer import Customer
 from sales.models.invoice import Invoice
 from sales.selectors import get_invoice_amount_due
-from sales.services.calculations import calculate_document_totals
 from sales.services.customers import assert_customer_usable_for_new_transaction
 from sales.services.line_items import build_line_snapshot
+from tax.enums import SupplyNature, TaxDirection
+from tax.services.computation import apply_tax_components, component_totals
+from tax.services.documents import carry_forward_tax, resolve_document_tax
+from tax.services.posting import build_tax_journal_lines
 
 CREDIT_NOTE_NUMBER_SEQUENCE_KEY = "credit_note"
 
@@ -34,8 +38,14 @@ def _validate_account(*, organization, account, expected_type, field_name):
         )
 
 
-def _build_credit_note_line_row(*, organization, credit_note_warehouse, line: dict, line_number: int) -> dict:
+def _build_credit_note_line_row(
+    *, organization, credit_note_warehouse, line: dict, line_number: int,
+    supply_nature: str = SupplyNature.UNSPECIFIED,
+) -> dict:
     row = build_line_snapshot(organization=organization, line=line, line_number=line_number)
+    row = apply_tax_components(
+        row, supply_nature=supply_nature, cess_rate=line.get("cess_rate", Decimal("0"))
+    )
     item = row["item"]
     source_invoice_line = line.get("source_invoice_line")
     restock = line.get("restock", False)
@@ -102,6 +112,8 @@ def create_credit_note(
     unapplied_credit_account=None,
     warehouse=None,
     notes: str = "",
+    place_of_supply=None,
+    tax_treatment: dict | None = None,
     actor=None,
 ) -> CreditNote:
     if customer.organization_id != organization.id:
@@ -128,11 +140,28 @@ def create_credit_note(
 
     currency = currency or (source_invoice.currency if source_invoice else customer.currency)
 
+    # A credit note against an invoice inherits that invoice's GST treatment
+    # rather than re-determining it. Crediting a supply under a different
+    # treatment than it was billed under would leave GSTR-1 unable to net the
+    # two against each other.
+    if tax_treatment is None:
+        tax_treatment = (
+            {k: v for k, v in carry_forward_tax(source_invoice).items() if k != "is_reverse_charge"}
+            if source_invoice is not None
+            else resolve_document_tax(
+                organization=organization, party=customer, place_of_supply=place_of_supply
+            )
+        )
+
     line_rows = [
-        _build_credit_note_line_row(organization=organization, credit_note_warehouse=warehouse, line=line, line_number=index)
+        _build_credit_note_line_row(
+            organization=organization, credit_note_warehouse=warehouse, line=line,
+            line_number=index, supply_nature=tax_treatment["supply_nature"],
+        )
         for index, line in enumerate(lines, start=1)
     ]
     totals = calculate_document_totals(line_rows)
+    components = component_totals(line_rows)
 
     credit_note = CreditNote.objects.create(
         organization=organization,
@@ -153,6 +182,8 @@ def create_credit_note(
         total=totals["total"],
         notes=notes,
         created_by=actor,
+        **components,
+        **tax_treatment,
     )
     for row in line_rows:
         CreditNoteLine.objects.create(organization=organization, credit_note=credit_note, **row)
@@ -178,11 +209,12 @@ def replace_credit_note_lines(*, credit_note: CreditNote, lines: list[dict], act
     line_rows = [
         _build_credit_note_line_row(
             organization=credit_note.organization, credit_note_warehouse=credit_note.warehouse, line=line,
-            line_number=index,
+            line_number=index, supply_nature=credit_note.supply_nature,
         )
         for index, line in enumerate(lines, start=1)
     ]
     totals = calculate_document_totals(line_rows)
+    components = component_totals(line_rows)
 
     credit_note.lines.all().delete()
     for row in line_rows:
@@ -192,7 +224,13 @@ def replace_credit_note_lines(*, credit_note: CreditNote, lines: list[dict], act
     credit_note.discount_total = totals["discount"]
     credit_note.tax_total = totals["tax"]
     credit_note.total = totals["total"]
-    credit_note.save(update_fields=["subtotal", "discount_total", "tax_total", "total", "updated_at"])
+    for field, value in components.items():
+        setattr(credit_note, field, value)
+    credit_note.save(
+        update_fields=[
+            "subtotal", "discount_total", "tax_total", "total", *components.keys(), "updated_at",
+        ]
+    )
 
     record_audit(
         organization_id=credit_note.organization_id,
@@ -239,12 +277,11 @@ def issue_credit_note(*, credit_note_id, organization, actor=None) -> CreditNote
     else:
         source_invoice = None
 
-    if credit_note.tax_total > 0 and credit_note.tax_payable_account_id is None and (
-        source_invoice is None or source_invoice.tax_payable_account_id is None
-    ):
-        raise ApplicationError(
-            "tax_payable_account is required to issue a credit note with tax.", code="tax_account_required"
-        )
+    # The account requirement is enforced by build_output_tax_lines below,
+    # which only demands one when the components cannot carry the tax
+    # themselves. The inheritance from the source invoice stays: a credit note
+    # that omits the account still reverses into the account the original
+    # supply was posted to.
     tax_payable_account_id = credit_note.tax_payable_account_id or (
         source_invoice.tax_payable_account_id if source_invoice else None
     )
@@ -281,8 +318,22 @@ def issue_credit_note(*, credit_note_id, organization, actor=None) -> CreditNote
     for account_id, amount in revenue_by_account.items():
         if amount != 0:
             journal_lines.append({"account_id": account_id, "debit": amount})
-    if credit_note.tax_total > 0:
-        journal_lines.append({"account_id": tax_payable_account_id, "debit": credit_note.tax_total})
+    # A credit note reverses output tax, so each component is DEBITED here -
+    # the mirror of post_invoice's credits, through the same builder so the
+    # two can never disagree about which account a component belongs to.
+    journal_lines.extend(
+        build_tax_journal_lines(
+            organization=organization,
+            document=credit_note,
+            direction=TaxDirection.OUTPUT,
+            fallback_account_id=tax_payable_account_id,
+            side="debit",
+            account_required_message=(
+                "tax_payable_account is required to issue a credit note with tax, unless "
+                "every tax component is mapped to an account."
+            ),
+        )
+    )
     if applied_to_ar > 0:
         journal_lines.append({"account_id": receivable_account.id, "credit": applied_to_ar})
     if unapplied > 0:

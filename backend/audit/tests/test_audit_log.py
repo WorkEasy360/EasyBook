@@ -58,3 +58,31 @@ class AuditLogTests(TestCase):
             visible = list(AuditLog.objects.all())
         self.assertEqual(len(visible), 1)
         self.assertEqual(visible[0].object_id, "1")
+
+    def test_changes_accepts_decimal_date_and_uuid_values(self):
+        """Regression: `changes` was a plain JSONField, so recording a Decimal
+        money amount raised TypeError and aborted the surrounding financial
+        transaction — an audit write must never be the reason a mutation
+        fails. Fixed at the field definition with DjangoJSONEncoder (see
+        audit/models.py), so every caller benefits, not just the one that
+        first hit it (purchases.update_expense; sales.update_customer with a
+        credit_limit had the same latent bug)."""
+        import datetime
+        import uuid
+        from decimal import Decimal
+
+        entry = audit_services.record(
+            organization_id=self.organization.id,
+            action=AuditLog.Action.UPDATE,
+            object_type="bill",
+            object_id="1",
+            changes={
+                "amount": Decimal("1234.56"),
+                "bill_date": datetime.date(2026, 4, 10),
+                "journal_id": uuid.uuid4(),
+            },
+        )
+        with tenant_context(organization_id=self.organization.id):
+            stored = AuditLog.objects.get(pk=entry.pk)
+        self.assertEqual(stored.changes["amount"], "1234.56")
+        self.assertEqual(stored.changes["bill_date"], "2026-04-10")

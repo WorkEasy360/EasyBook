@@ -3,6 +3,7 @@ from decimal import Decimal
 from django.db import models
 
 from core.models import TenantScopedModel
+from tax.enums import TaxTreatment
 
 
 class Customer(TenantScopedModel):
@@ -21,14 +22,31 @@ class Customer(TenantScopedModel):
     email = models.EmailField(blank=True)
     phone = models.CharField(max_length=32, blank=True)
 
-    # Freeform metadata placeholders only — no GST/PAN validation or
-    # compliance logic here (root CLAUDE.md: don't invent compliance rules).
+    # Validated from Phase 7 onward by `tax.services.validation.validate_gstin`,
+    # applied in `sales/services/customers.py` — structure and check digit only,
+    # never a claim that the registration exists or is active (only the GST
+    # portal can say that, and this codebase has no credentials for it).
     gstin = models.CharField(max_length=15, blank=True)
     pan = models.CharField(max_length=10, blank=True)
 
-    # Structured address fields aren't required yet (no GST place-of-supply
-    # logic exists in this phase); a JSON blob avoids inventing a schema
-    # prematurely while still being queryable if a future phase needs it.
+    # What this customer IS for tax purposes, and where supplies to them land.
+    # Both are INPUTS to `tax.services.determination.determine_supply_nature`,
+    # never outputs of it: `tax_treatment` is what makes an SEZ customer attract
+    # IGST even in the supplier's own state.
+    tax_treatment = models.CharField(
+        max_length=20, choices=TaxTreatment.choices, default=TaxTreatment.UNREGISTERED
+    )
+    # The default place of supply for this customer. A DEFAULT, not a rule:
+    # every document carries its own `place_of_supply`, because the statutory
+    # answer (IGST Act ss.10-13) turns on facts about the individual supply
+    # that master data cannot know. See tax/services/determination.py.
+    place_of_supply_state = models.ForeignKey(
+        "tax.StateCode", null=True, blank=True, on_delete=models.PROTECT, related_name="+"
+    )
+
+    # Still a JSON blob: place of supply is now a typed field above, so the
+    # address does not need to carry tax meaning and no schema is being
+    # invented for it prematurely.
     billing_address = models.JSONField(default=dict, blank=True)
     shipping_address = models.JSONField(default=dict, blank=True)
 
@@ -43,7 +61,7 @@ class Customer(TenantScopedModel):
         constraints = [
             models.UniqueConstraint(fields=["organization", "customer_code"], name="uniq_customer_code_per_org"),
             models.CheckConstraint(
-                check=models.Q(credit_limit__isnull=True) | models.Q(credit_limit__gte=Decimal("0")),
+                condition=models.Q(credit_limit__isnull=True) | models.Q(credit_limit__gte=Decimal("0")),
                 name="customer_credit_limit_nonnegative",
             ),
         ]

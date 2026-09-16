@@ -17,6 +17,8 @@ None on other domain apps — `roles.py` is pure Python so it can be imported fr
 INVARIANTS
 - `ROLE_PERMISSIONS` must stay a strict hierarchy in practice (owner ⊇ admin ⊇ everything else) — if you add a permission, decide deliberately which roles get it rather than defaulting everyone in.
 - A view enforcing a permission sets `required_permission = Permission.X` as a class attribute and includes `HasOrgPermission` in `permission_classes`; it does nothing on its own without `OrganizationScopedMixin` having already set `request.membership`.
+- Detail views split `required_permission` by HTTP method via a `@property` (GET -> the VIEW_ permission, writes -> the MANAGE_/action permission). Hardcoding the write permission on a detail view silently blocks viewers from retrieving a single record — that was a real bug in `sales.CreditNoteDetailView`, and `purchases/tests/test_api.py` carries a regression guard for the same shape.
+- One deliberate non-mirror between the sales and purchases grants: `Role.STAFF` may `RECORD_PAYMENT` (money in) but NOT `RECORD_VENDOR_PAYMENT` (money out). That is the segregation-of-duties line; see purchases/CLAUDE.md and the assertions in tests/test_roles.py before changing it.
 
 TESTS
 Any change to `ROLE_PERMISSIONS` needs a test asserting the new matrix — a silent permission grant/revoke here is a security-relevant regression, not a refactor.

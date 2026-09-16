@@ -1,12 +1,12 @@
 import datetime
 
-from dateutil.relativedelta import relativedelta
 from django.db import IntegrityError, transaction
 from django.utils import timezone
 
 from audit.models import AuditLog
 from audit.services import record as record_audit
 from core.exceptions import ApplicationError
+from core.recurrence import advance_occurrence
 from core.tenancy import tenant_context
 from sales.models.customer import Customer
 from sales.models.invoice import Invoice
@@ -19,18 +19,7 @@ from sales.models.recurring_invoice import (
 from sales.services.customers import assert_customer_usable_for_new_transaction
 from sales.services.invoices import create_invoice
 from sales.services.line_items import validate_item_for_line
-
-
-def _advance(occurrence_date: datetime.date, frequency: str) -> datetime.date:
-    if frequency == RecurringFrequency.WEEKLY:
-        return occurrence_date + datetime.timedelta(weeks=1)
-    if frequency == RecurringFrequency.MONTHLY:
-        return occurrence_date + relativedelta(months=1)
-    if frequency == RecurringFrequency.QUARTERLY:
-        return occurrence_date + relativedelta(months=3)
-    if frequency == RecurringFrequency.YEARLY:
-        return occurrence_date + relativedelta(years=1)
-    raise ApplicationError(f"Unknown recurrence frequency '{frequency}'.", code="recurring_frequency_invalid")
+from tax.services.documents import carry_forward_tax, resolve_document_tax
 
 
 def _validate_line(*, organization, line: dict) -> dict:
@@ -46,6 +35,7 @@ def _validate_line(*, organization, line: dict) -> dict:
         "unit_price": line["unit_price"],
         "discount_percent": line.get("discount_percent", 0),
         "tax_rate": line.get("tax_rate", 0),
+        "cess_rate": line.get("cess_rate", 0),
     }
 
 
@@ -68,6 +58,7 @@ def create_recurring_template(
     notes: str = "",
     terms: str = "",
     is_active: bool = True,
+    place_of_supply=None,
     actor=None,
 ) -> RecurringInvoiceTemplate:
     if customer.organization_id != organization.id:
@@ -83,9 +74,14 @@ def create_recurring_template(
     currency = currency or customer.currency
     validated_lines = [_validate_line(organization=organization, line=line) for line in lines]
 
+    tax_treatment = resolve_document_tax(
+        organization=organization, party=customer, place_of_supply=place_of_supply
+    )
+
     template = RecurringInvoiceTemplate.objects.create(
         organization=organization,
         customer=customer,
+        **tax_treatment,
         frequency=frequency,
         start_date=start_date,
         end_date=end_date,
@@ -177,14 +173,23 @@ def _generate_one_occurrence(*, template_id, organization, actor=None) -> Invoic
     lines = [
         {
             "item": line.item, "description": line.description, "quantity": line.quantity,
-            "unit_price": line.unit_price, "discount_percent": line.discount_percent, "tax_rate": line.tax_rate,
+            "unit_price": line.unit_price, "discount_percent": line.discount_percent,
+            "tax_rate": line.tax_rate, "cess_rate": line.cess_rate,
         }
         for line in template.lines.all()
     ]
 
+    # Each occurrence inherits the template's treatment rather than
+    # re-determining it per run. A template generating monthly for two years
+    # must not silently change the tax it charges because the customer's
+    # master data was edited in month seven.
+    carried = carry_forward_tax(template)
+
     invoice = create_invoice(
         organization=organization,
         customer=template.customer,
+        tax_treatment={k: v for k, v in carried.items() if k != "is_reverse_charge"},
+        is_reverse_charge=carried["is_reverse_charge"],
         invoice_date=occurrence_date,
         due_date=occurrence_date + datetime.timedelta(days=template.due_days),
         receivable_account=template.receivable_account,
@@ -208,7 +213,7 @@ def _generate_one_occurrence(*, template_id, organization, actor=None) -> Invoic
             "This occurrence has already been generated.", code="recurring_occurrence_duplicate"
         )
 
-    template.next_run_at = _advance(occurrence_date, template.frequency)
+    template.next_run_at = advance_occurrence(occurrence_date, template.frequency)
     template.save(update_fields=["next_run_at", "updated_at"])
 
     record_audit(

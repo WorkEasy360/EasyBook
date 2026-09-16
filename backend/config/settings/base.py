@@ -34,9 +34,15 @@ INSTALLED_APPS = [
     "authz",
     "audit",
     "accounting",
+    "tax",
     "items",
     "inventory",
     "sales",
+    "purchases",
+    "projects",
+    "banking",
+    "compliance",
+    "reports",
 ]
 
 MIDDLEWARE = [

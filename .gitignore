@@ -1,0 +1,30 @@
+# Python / Django
+__pycache__/
+*.pyc
+.venv/
+venv/
+*.egg-info/
+db.sqlite3
+staticfiles/
+mediafiles/
+
+# Env / secrets
+.env
+.env.*
+!.env.example
+
+# Node / Next.js
+node_modules/
+.next/
+out/
+dist/
+build/
+coverage/
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Docker volumes are managed by Docker itself, not the repo

@@ -9,6 +9,7 @@ from inventory.models.stock_movement import OUTBOUND_MOVEMENT_TYPES, MovementTyp
 from inventory.models.warehouse import Warehouse
 from inventory.selectors import get_stock_on_hand
 from inventory.services.settings import allows_negative_stock
+from items.models.item import Item, ItemType
 
 
 def _as_movement_datetime(value):
@@ -21,8 +22,6 @@ def _as_movement_datetime(value):
     if isinstance(value, datetime.datetime):
         return value if timezone.is_aware(value) else timezone.make_aware(value)
     return timezone.make_aware(datetime.datetime.combine(value, datetime.time.min))
-from items.models.item import Item, ItemType
-
 
 def _validate_item_and_warehouse(*, organization, item: Item, warehouse: Warehouse) -> None:
     if item.organization_id != organization.id:

@@ -69,7 +69,7 @@ class StockMovement(TenantScopedModel):
 
     class Meta:
         constraints = [
-            models.CheckConstraint(check=models.Q(quantity__gt=0), name="stock_movement_quantity_positive"),
+            models.CheckConstraint(condition=models.Q(quantity__gt=0), name="stock_movement_quantity_positive"),
         ]
         indexes = [
             models.Index(fields=["organization", "item", "warehouse"]),

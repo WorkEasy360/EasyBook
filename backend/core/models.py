@@ -28,7 +28,11 @@ class TenantScopedModel(TimeStampedModel):
     )
 
     objects = TenantManager()
-    all_objects = models.Manager()
+    # The unscoped manager, for the few places that must query without the
+    # application-level tenant filter (RLS still applies — see core/CLAUDE.md).
+    # DJ012 wants every field declared before any manager; both managers here
+    # are deliberately grouped with the tenancy machinery they belong to.
+    all_objects = models.Manager()  # noqa: DJ012
 
     class Meta:
         abstract = True
@@ -57,3 +61,10 @@ class IdempotencyKey(TenantScopedModel):
                 name="uniq_idempotency_key_per_org_path",
             )
         ]
+
+    def __str__(self):
+        # The stored response body is deliberately NOT included: it can hold
+        # customer/financial data, and __str__ lands in admin listings, error
+        # pages and log lines (root CLAUDE.md: don't leak data into logs).
+        return f"{self.key}@{self.request_path}"
+

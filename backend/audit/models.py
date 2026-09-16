@@ -1,4 +1,5 @@
 from django.conf import settings
+from django.core.serializers.json import DjangoJSONEncoder
 from django.db import models
 
 from core.models import TenantScopedModel
@@ -19,7 +20,15 @@ class AuditLog(TenantScopedModel):
     action = models.CharField(max_length=20, choices=Action.choices)
     object_type = models.CharField(max_length=100)
     object_id = models.CharField(max_length=64)
-    changes = models.JSONField(default=dict, blank=True)
+    # DjangoJSONEncoder - not the plain json encoder - because services
+    # routinely record Decimal money amounts and date/UUID values in
+    # `changes`, none of which stdlib json can serialize. The plain
+    # encoder made `record(changes={"amount": Decimal("1.00")})` raise
+    # TypeError, which would have turned an audit write - the thing that
+    # must never be the reason a financial mutation fails - into a
+    # transaction-aborting error. Same fix, same reasoning, as
+    # core.models.IdempotencyKey.response_body.
+    changes = models.JSONField(default=dict, blank=True, encoder=DjangoJSONEncoder)
     request_id = models.CharField(max_length=64, blank=True)
     ip_address = models.GenericIPAddressField(null=True, blank=True)
 
