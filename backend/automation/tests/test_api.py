@@ -124,9 +124,11 @@ class AutomationExecutionAPITests(APITestCase):
         rule_id = self._create_and_activate_manual_rule()
 
         self.client.force_authenticate(user=self.owner_a)
-        run_response = self.client.post(f"/api/v1/automation/rules/{rule_id}/run/", **self._headers(self.org_a))
+        with self.captureOnCommitCallbacks(execute=True):
+            run_response = self.client.post(f"/api/v1/automation/rules/{rule_id}/run/", **self._headers(self.org_a))
         self.assertEqual(run_response.status_code, 201, run_response.data)
-        self.assertEqual(run_response.data["status"], "succeeded")
+        # Enqueued on commit, so the response can only ever report it pending.
+        self.assertEqual(run_response.data["status"], "pending")
         self.assertEqual(run_response.data["trigger_source"], "manual")
         execution_id = run_response.data["id"]
 
@@ -136,6 +138,7 @@ class AutomationExecutionAPITests(APITestCase):
 
         detail_response = self.client.get(f"/api/v1/automation/executions/{execution_id}/", **self._headers(self.org_a))
         self.assertEqual(detail_response.status_code, 200)
+        self.assertEqual(detail_response.data["status"], "succeeded")
         self.assertEqual(len(detail_response.data["steps"]), 1)
         self.assertEqual(detail_response.data["steps"][0]["status"], "succeeded")
 
@@ -162,7 +165,8 @@ class AutomationExecutionAPITests(APITestCase):
     def test_retry_endpoint_rejects_a_succeeded_execution(self):
         rule_id = self._create_and_activate_manual_rule()
         self.client.force_authenticate(user=self.owner_a)
-        run_response = self.client.post(f"/api/v1/automation/rules/{rule_id}/run/", **self._headers(self.org_a))
+        with self.captureOnCommitCallbacks(execute=True):
+            run_response = self.client.post(f"/api/v1/automation/rules/{rule_id}/run/", **self._headers(self.org_a))
         execution_id = run_response.data["id"]
 
         retry_response = self.client.post(

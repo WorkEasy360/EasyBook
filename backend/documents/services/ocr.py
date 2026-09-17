@@ -45,7 +45,12 @@ def request_ocr(*, document: Document, actor=None) -> Document:
 
     from documents.tasks import run_ocr_task
 
-    run_ocr_task.delay(str(document.id), str(document.organization_id))
+    # On commit: called from the OCR endpoint this is still inside the
+    # request's transaction, and a worker that claimed the message first would
+    # see the document not yet QUEUED, skip it as a duplicate, and leave it
+    # QUEUED forever.
+    document_id, organization_id = str(document.id), str(document.organization_id)
+    transaction.on_commit(lambda: run_ocr_task.delay(document_id, organization_id))
     return document
 
 

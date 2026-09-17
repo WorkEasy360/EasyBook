@@ -23,7 +23,8 @@ class ReviewWorkflowTests(DocumentsTestsBase):
                 organization=self.org_a, uploaded_by=self.user_a, content=PDF_BYTES,
                 original_filename="receipt.pdf",
             )
-            request_ocr(document=self.document)
+            with self.captureOnCommitCallbacks(execute=True):
+                request_ocr(document=self.document)
             self.document.refresh_from_db()
 
     def test_cannot_review_before_ocr_requested(self):

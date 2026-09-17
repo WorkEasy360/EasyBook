@@ -57,9 +57,16 @@ def run_execution_task(self, execution_id: str, organization_id: str):
                 "attempt": execution.attempt_count,
             },
         )
-        if retryable_step_ids(execution).exists():
-            raise _RetryableStepsRemain(execution_id)
-        return {"execution_id": execution_id, "status": execution.status}
+        retry_needed = retryable_step_ids(execution).exists()
+
+    # Raised only after tenant_context's transaction has committed. Raised
+    # inside it, the exception rolled back everything this attempt recorded —
+    # attempt counts, RETRYING/SUCCEEDED step states, created notifications —
+    # so every retry repeated every side effect and the step budget was never
+    # reached.
+    if retry_needed:
+        raise _RetryableStepsRemain(execution_id)
+    return {"execution_id": execution_id, "status": execution.status}
 
 
 def _dispatch_events_for_org(organization) -> int:

@@ -202,7 +202,8 @@ class OcrAndReviewEndpointTests(DocumentsApiTestsBase):
         fake_result = ExtractionResult(provider="fake", provider_version="1", raw_text="hi", confidence=0.95)
         with patch("documents.services.ocr.get_provider") as mock_provider:
             mock_provider.return_value.extract.return_value = fake_result
-            queued = self.client.post(f"/api/v1/documents/{doc_id}/ocr/", **self._headers())
+            with self.captureOnCommitCallbacks(execute=True):
+                queued = self.client.post(f"/api/v1/documents/{doc_id}/ocr/", **self._headers())
         self.assertEqual(queued.status_code, 202)
 
         result = self.client.get(f"/api/v1/documents/{doc_id}/ocr/", **self._headers())
@@ -222,7 +223,8 @@ class OcrAndReviewEndpointTests(DocumentsApiTestsBase):
             mock_provider.return_value.extract.return_value = ExtractionResult(
                 provider="fake", provider_version="1", raw_text="hi", confidence=0.2
             )
-            self.client.post(f"/api/v1/documents/{doc_id}/ocr/", **self._headers())
+            with self.captureOnCommitCallbacks(execute=True):
+                self.client.post(f"/api/v1/documents/{doc_id}/ocr/", **self._headers())
 
         staff_client = self._as_role(Role.STAFF, "staff-review@example.com")
         response = staff_client.post(

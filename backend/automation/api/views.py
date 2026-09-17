@@ -1,5 +1,6 @@
 import uuid
 
+from django.db import transaction
 from rest_framework import generics
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -110,8 +111,10 @@ class AutomationRuleArchiveView(_AutomationRuleTransitionView):
 
 class AutomationRuleRunView(OrganizationScopedMixin, APIView):
     """Manual trigger (phase section 8). Enqueues execution rather than
-    running it inline in the request thread (phase section 13) — under
-    CELERY_TASK_ALWAYS_EAGER (tests only) this still completes synchronously."""
+    running it inline in the request thread (phase section 13), and only once
+    the request's transaction commits: enqueued earlier, a worker can pick the
+    message up before the execution row is visible, skip it as not found, and
+    leave it PENDING forever. The response therefore reports it PENDING."""
 
     permission_classes = [HasOrgPermission]
     required_permission = Permission.RUN_AUTOMATION
@@ -147,7 +150,8 @@ class AutomationRuleRunView(OrganizationScopedMixin, APIView):
             object_type="automation.AutomationExecution", object_id=execution.id,
             changes={"trigger_source": "manual", "rule_id": str(rule.id)},
         )
-        run_execution_task.delay(str(execution.id), str(request.organization.id))
+        execution_id, organization_id = str(execution.id), str(request.organization.id)
+        transaction.on_commit(lambda: run_execution_task.delay(execution_id, organization_id))
         execution.refresh_from_db()
         return Response(AutomationExecutionSerializer(execution).data, status=201)
 
@@ -197,7 +201,10 @@ class AutomationExecutionRetryView(OrganizationScopedMixin, APIView):
             organization_id=request.organization.id, actor=request.user, action=AuditLog.Action.UPDATE,
             object_type="automation.AutomationExecution", object_id=execution.id, changes={"action": "manual_retry"},
         )
-        run_execution_task.delay(str(execution.id), str(request.organization.id))
+        # After commit, for the same reason as AutomationRuleRunView: enqueued
+        # earlier, a worker can still see the pre-retry FAILED state.
+        execution_id, organization_id = str(execution.id), str(request.organization.id)
+        transaction.on_commit(lambda: run_execution_task.delay(execution_id, organization_id))
         execution.refresh_from_db()
         return Response(AutomationExecutionSerializer(execution).data)
 
