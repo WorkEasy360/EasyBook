@@ -12,11 +12,11 @@ from decimal import Decimal
 from django.db.models import Sum
 
 from accounting.models.account import Account
-from accounting.models.journal import JournalLine, JournalStatus
+from accounting.models.journal import LEDGER_STATUSES, JournalLine
 
 
 def _posted_lines_for_account(*, account, up_to_date=None, from_date=None):
-    qs = JournalLine.objects.filter(account=account, journal_entry__status=JournalStatus.POSTED)
+    qs = JournalLine.objects.filter(account=account, journal_entry__status__in=LEDGER_STATUSES)
     if from_date is not None:
         qs = qs.filter(journal_entry__posting_date__gte=from_date)
     if up_to_date is not None:

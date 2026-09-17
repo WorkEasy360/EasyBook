@@ -12,6 +12,13 @@ class JournalStatus(models.TextChoices):
     REVERSED = "reversed", "Reversed"
 
 
+# Statuses whose lines are part of the ledger. A REVERSED journal stays a
+# posted fact of its own period; its effect is cancelled by the separate POSTED
+# reversal journal. Counting POSTED alone drops the original but keeps its
+# mirror, so every balance/report derived from JournalLine must use this.
+LEDGER_STATUSES = (JournalStatus.POSTED, JournalStatus.REVERSED)
+
+
 class JournalEntry(TenantScopedModel):
     """A single accounting transaction: header for a balanced set of JournalLines.
 

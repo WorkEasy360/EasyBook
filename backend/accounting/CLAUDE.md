@@ -20,6 +20,7 @@ INVARIANTS
 - Posted journals/lines are immutable: `JournalEntry.save()`/`delete()` and `JournalLine.save()`/`delete()` raise `ValueError` outside the allowed DRAFT→POSTED/POSTED→REVERSED transitions. Corrections go through `reverse_journal()`, never direct edits.
 - `post_journal()` is idempotent by construction: posting an already-POSTED journal is a no-op returning the existing journal (locked via `select_for_update()`), not a second Idempotency-Key system layered on top.
 - A journal can be reversed at most once — `JournalEntry.reverses` is a `OneToOneField`.
+- Ledger-derived figures (GL, Trial Balance, every report, bank book balance) filter `journal_entry__status__in=LEDGER_STATUSES` (POSTED + REVERSED), never `status=POSTED` alone: a reversed original stays a fact of its own period and its POSTED reversal cancels it. Filtering POSTED only drops the original but keeps the mirror, reporting minus the original instead of zero.
 - Journal numbers are allocated at POST time via `accounts.services.allocate_sequence_number`, never at draft creation.
 - Every accounting table is a `TenantScopedModel` with a matching RLS migration (see `core/CLAUDE.md`) — no exceptions.
 - Authoritative accounting numbers (balances, journal totals, trial balance) are never computed by AI — see root `CLAUDE.md` pipeline rule.

@@ -10,7 +10,7 @@ from decimal import Decimal
 from django.db.models import Sum
 
 from accounting.models.account import Account, AccountType
-from accounting.models.journal import JournalLine, JournalStatus
+from accounting.models.journal import LEDGER_STATUSES, JournalLine
 from reports.selectors.classification import classify_expense, classify_income
 from reports.selectors.params import compute_variance
 
@@ -25,7 +25,7 @@ def _period_aggregates_by_account(*, organization, from_date, to_date):
     account queries."""
     qs = JournalLine.objects.filter(
         organization=organization,
-        journal_entry__status=JournalStatus.POSTED,
+        journal_entry__status__in=LEDGER_STATUSES,
         account__account_type__in=[AccountType.INCOME, AccountType.EXPENSE],
     )
     if from_date is not None:
