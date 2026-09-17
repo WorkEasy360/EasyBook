@@ -97,10 +97,14 @@ resource "aws_cloudwatch_metric_alarm" "rds_connections" {
   namespace           = "AWS/RDS"
   metric_name         = "DatabaseConnections"
   statistic           = "Average"
-  # A fraction of the instance class's real max_connections, not that ceiling
-  # itself — leaves headroom to alert before connections are actually
-  # exhausted. Revisit alongside phase 12 section 15's connection-pooling review.
-  threshold          = 80
+  # Sized to the connection budget (backend/config/asgi_worker.py): ~100
+  # connections steady (api 2 tasks x 4 processes x 10 + Celery 20 + beat),
+  # ~200 while a rolling deploy runs old and new tasks together. 250 sits above
+  # that and below db.t4g.medium's max_connections (LEAST(DBInstanceClassMemory
+  # / 9531392, 5000), roughly 400) — so it fires on a real leak or runaway, not
+  # on every deploy. Revisit with instance class, task counts or
+  # ASGI_LIMIT_CONCURRENCY.
+  threshold          = 250
   treat_missing_data = "notBreaching"
   alarm_actions      = [aws_sns_topic.alerts.arn]
   ok_actions         = [aws_sns_topic.alerts.arn]

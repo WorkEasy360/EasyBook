@@ -65,6 +65,10 @@ resource "aws_ecs_task_definition" "service" {
         { name = "DB_PORT", value = tostring(aws_db_instance.main.port) },
         # rediss:// (TLS), matching elasticache.tf's transit_encryption_enabled.
         { name = "REDIS_URL", value = "rediss://${aws_elasticache_replication_group.main.primary_endpoint_address}:6379/0" },
+        # The API keeps Django's 30s default (backend/config/settings/base.py);
+        # workers run batch statements (recurring generation, retention
+        # purges) that may legitimately take longer, but never unbounded.
+        { name = "DB_STATEMENT_TIMEOUT_MS", value = each.value.is_load_balanced ? "30000" : "300000" },
         { name = "DOCUMENT_STORAGE_BACKEND", value = "s3" },
         { name = "DOCUMENT_STORAGE_S3_BUCKET", value = aws_s3_bucket.documents.bucket },
         { name = "DOCUMENT_STORAGE_S3_REGION", value = var.aws_region },

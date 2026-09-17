@@ -100,7 +100,28 @@ DATABASES = {
         # SET LOCAL tenant GUC (see core.tenancy) stays scoped to that request
         # and financial mutations remain all-or-nothing. See backend/core/CLAUDE.md.
         "ATOMIC_REQUESTS": True,
-        "CONN_MAX_AGE": env.int("DB_CONN_MAX_AGE", default=60),
+        # Never persistent, and deliberately not env-overridable. Django's docs:
+        # "When using ASGI, persistent connections should be disabled" — each
+        # request's sync code runs in its own thread with its own connection,
+        # and one kept open in a finished request's thread is never reused, so
+        # connections accumulated toward RDS max_connections. The API process's
+        # concurrency limit (config/asgi_worker.py) is what bounds how many
+        # connections exist at once.
+        "CONN_MAX_AGE": 0,
+        "OPTIONS": {
+            # Server-side guards on every connection (psycopg passes libpq
+            # `options`). A runaway statement is cancelled instead of holding its
+            # connection and locks; a transaction left idle — a request stalled
+            # mid-ATOMIC_REQUESTS — is terminated instead of pinning a connection.
+            # The idle limit must exceed the longest external call made inside a
+            # transaction (AI_LLM_TIMEOUT_SECONDS, S3 uploads). Workers raise the
+            # statement limit via ECS env (infrastructure/terraform/ecs.tf); a
+            # one-off `migrate` task should set DB_STATEMENT_TIMEOUT_MS=0.
+            "options": (
+                f"-c statement_timeout={env.int('DB_STATEMENT_TIMEOUT_MS', default=30000)} "
+                f"-c idle_in_transaction_session_timeout={env.int('DB_IDLE_IN_TRANSACTION_TIMEOUT_MS', default=120000)}"
+            ),
+        },
     }
 }
 

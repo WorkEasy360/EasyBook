@@ -49,7 +49,9 @@ GRANT CREATE, USAGE ON SCHEMA public TO easybook_app;
 
 Then run migrations once (also needs VPC network access — a one-off ECS
 `RunTask` using the `api` task definition with `command` overridden to
-`["python", "manage.py", "migrate"]` is the standard pattern; do not bake an
+`["python", "manage.py", "migrate"]` and `DB_STATEMENT_TIMEOUT_MS=0` in its
+environment overrides is the standard pattern (every app connection otherwise
+cancels statements after 30s, which a large index build can exceed); do not bake an
 automatic `migrate` into every container's normal startup — phase 12 section
 48-49 on expand/migrate/contract deploys and avoiding concurrent migration races).
 

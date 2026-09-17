@@ -92,9 +92,12 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
 # verified 2026-09-16): gunicorn as the process manager (monitoring + restarts)
 # running the uvicorn_worker.UvicornWorker worker class — not the older
 # uvicorn.workers.UvicornWorker, which moved out of uvicorn core into the
-# separate uvicorn-worker package this image installs.
+# separate uvicorn-worker package this image installs. The worker class is a
+# subclass of it that bounds concurrent requests per process
+# (config/asgi_worker.py) — the stock class passes uvicorn no limit, and under
+# ASGI every concurrent request holds its own database connection.
 CMD ["gunicorn", "config.asgi:application", \
-     "-k", "uvicorn_worker.UvicornWorker", \
+     "-k", "config.asgi_worker.BoundedUvicornWorker", \
      "--bind", "0.0.0.0:8000", \
      "--workers", "4", \
      "--timeout", "60", \
