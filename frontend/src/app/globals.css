@@ -1,0 +1,268 @@
+@import "tailwindcss";
+
+/**
+ * EasyBook design system — original tokens, not derived from any competitor's
+ * visual identity.
+ *
+ * Direction (spec §10): professional, calm, dense where density helps. The
+ * accent is deliberately restrained — in an accounting product colour carries
+ * MEANING (overdue, negative, unreconciled), so the chrome must not spend it
+ * decoratively.
+ *
+ * Ships light only (spec §9). Every colour is declared as a semantic token
+ * below rather than used raw in components, so adding dark mode later is a
+ * matter of redeclaring this block under a selector, not editing features.
+ */
+
+@theme {
+  /* --- Brand: deep slate-teal. Reads as financial without reading as any
+     particular incumbent's blue or green. ------------------------------- */
+  --color-brand-50: oklch(0.971 0.017 195);
+  --color-brand-100: oklch(0.938 0.035 195);
+  --color-brand-200: oklch(0.885 0.063 194);
+  --color-brand-300: oklch(0.812 0.089 193);
+  --color-brand-400: oklch(0.715 0.098 192);
+  --color-brand-500: oklch(0.618 0.094 191);
+  --color-brand-600: oklch(0.524 0.082 191);
+  --color-brand-700: oklch(0.438 0.068 192);
+  --color-brand-800: oklch(0.366 0.054 193);
+  --color-brand-900: oklch(0.312 0.043 195);
+  --color-brand-950: oklch(0.218 0.032 197);
+
+  /* --- Neutrals: slightly cool, so large table surfaces do not look beige. */
+  --color-ink-50: oklch(0.985 0.002 250);
+  --color-ink-100: oklch(0.968 0.003 250);
+  --color-ink-200: oklch(0.925 0.005 250);
+  --color-ink-300: oklch(0.868 0.007 250);
+  --color-ink-400: oklch(0.708 0.011 250);
+  --color-ink-500: oklch(0.567 0.013 250);
+  --color-ink-600: oklch(0.452 0.013 250);
+  --color-ink-700: oklch(0.375 0.012 250);
+  --color-ink-800: oklch(0.283 0.010 250);
+  --color-ink-900: oklch(0.216 0.008 250);
+  --color-ink-950: oklch(0.145 0.006 250);
+
+  /* --- Status. Chosen for contrast against white at small text sizes, and
+     never used as the only signal for a state (spec §68). ---------------- */
+  --color-success-50: oklch(0.972 0.026 155);
+  --color-success-100: oklch(0.938 0.052 155);
+  --color-success-500: oklch(0.618 0.145 152);
+  --color-success-600: oklch(0.538 0.132 152);
+  --color-success-700: oklch(0.456 0.112 153);
+
+  --color-warning-50: oklch(0.977 0.035 85);
+  --color-warning-100: oklch(0.945 0.076 85);
+  --color-warning-500: oklch(0.742 0.152 72);
+  --color-warning-600: oklch(0.658 0.148 60);
+  --color-warning-700: oklch(0.552 0.128 52);
+
+  --color-danger-50: oklch(0.971 0.019 18);
+  --color-danger-100: oklch(0.936 0.038 18);
+  --color-danger-500: oklch(0.612 0.201 20);
+  --color-danger-600: oklch(0.542 0.193 22);
+  --color-danger-700: oklch(0.462 0.168 23);
+
+  --color-info-50: oklch(0.972 0.019 250);
+  --color-info-100: oklch(0.936 0.041 250);
+  --color-info-500: oklch(0.588 0.152 256);
+  --color-info-600: oklch(0.512 0.156 258);
+  --color-info-700: oklch(0.438 0.142 259);
+
+  /* --- Typography. A system stack keeps first paint free of a font request;
+     the numeric stack is what actually matters here. --------------------- */
+  --font-sans:
+    ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue",
+    Arial, "Noto Sans", sans-serif;
+  --font-mono:
+    ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+
+  --text-2xs: 0.6875rem;
+  --text-2xs--line-height: 1rem;
+
+  /* --- Radius: small. Large rounding reads as consumer, not ledger. ----- */
+  --radius-xs: 0.1875rem;
+  --radius-sm: 0.25rem;
+  --radius-md: 0.375rem;
+  --radius-lg: 0.5rem;
+  --radius-xl: 0.75rem;
+
+  /* --- Elevation: low and tight. Panels are separated by borders first,
+     shadow second (spec §10: no decorative depth). ----------------------- */
+  --shadow-xs: 0 1px 2px 0 rgb(16 24 40 / 0.04);
+  --shadow-sm: 0 1px 3px 0 rgb(16 24 40 / 0.08), 0 1px 2px -1px rgb(16 24 40 / 0.04);
+  --shadow-md: 0 4px 8px -2px rgb(16 24 40 / 0.08), 0 2px 4px -2px rgb(16 24 40 / 0.04);
+  --shadow-lg: 0 12px 16px -4px rgb(16 24 40 / 0.08), 0 4px 6px -2px rgb(16 24 40 / 0.03);
+  --shadow-overlay: 0 20px 24px -4px rgb(16 24 40 / 0.1), 0 8px 8px -4px rgb(16 24 40 / 0.04);
+
+  /* --- Motion: brief. Long animation in a data tool is friction. -------- */
+  --ease-out-quint: cubic-bezier(0.22, 1, 0.36, 1);
+  --animate-fade-in: fade-in 120ms var(--ease-out-quint);
+  --animate-slide-up: slide-up 160ms var(--ease-out-quint);
+
+  /* --- Layout rhythm. -------------------------------------------------- */
+  --spacing-sidebar: 16rem;
+  --spacing-sidebar-collapsed: 4rem;
+  --spacing-header: 3.5rem;
+}
+
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes slide-up {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/**
+ * Semantic surface tokens. Components reference THESE, not the scales above,
+ * which is what makes a future dark theme a change to one block.
+ */
+:root {
+  --surface-page: var(--color-ink-50);
+  --surface-raised: #ffffff;
+  --surface-sunken: var(--color-ink-100);
+  --surface-inverse: var(--color-ink-900);
+  --surface-hover: var(--color-ink-100);
+  --surface-selected: var(--color-brand-50);
+
+  --border-subtle: var(--color-ink-200);
+  --border-default: var(--color-ink-300);
+  --border-strong: var(--color-ink-400);
+  --border-focus: var(--color-brand-600);
+
+  --text-primary: var(--color-ink-900);
+  --text-secondary: var(--color-ink-600);
+  --text-muted: var(--color-ink-500);
+  --text-inverse: #ffffff;
+  --text-link: var(--color-brand-700);
+
+  /* Money that reduces the balance. Paired with a sign or parentheses so
+     colour is never the only carrier (spec §68, §71). */
+  --text-negative: var(--color-danger-600);
+  --text-positive: var(--color-success-700);
+}
+
+@layer base {
+  * {
+    border-color: var(--border-subtle);
+  }
+
+  html {
+    -webkit-text-size-adjust: 100%;
+  }
+
+  body {
+    background-color: var(--surface-page);
+    color: var(--text-primary);
+    font-family: var(--font-sans);
+    font-feature-settings: "cv02", "cv03", "cv04";
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /*
+   * Figures line up in columns. Without tabular numerals a ledger column is
+   * ragged and genuinely harder to scan — this is the single highest-value
+   * typographic rule in the whole system.
+   */
+  .tabular,
+  td.numeric,
+  th.numeric,
+  input[type="number"],
+  [data-numeric] {
+    font-variant-numeric: tabular-nums;
+    font-feature-settings: "tnum";
+  }
+
+  /*
+   * A visible focus ring on every interactive element. :focus-visible keeps
+   * it off mouse clicks while guaranteeing it for keyboard users (spec §68).
+   */
+  :focus-visible {
+    outline: 2px solid var(--border-focus);
+    outline-offset: 2px;
+    border-radius: var(--radius-sm);
+  }
+
+  [hidden] {
+    display: none !important;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+      scroll-behavior: auto !important;
+    }
+  }
+}
+
+@layer components {
+  /* Skip link: first tab stop on every page, visible only when focused. */
+  .skip-link {
+    position: absolute;
+    left: -9999px;
+    z-index: 100;
+  }
+
+  .skip-link:focus {
+    left: 1rem;
+    top: 1rem;
+    padding: 0.5rem 0.875rem;
+    background: var(--surface-raised);
+    border: 1px solid var(--border-default);
+    border-radius: var(--radius-md);
+    box-shadow: var(--shadow-md);
+  }
+
+  /* Screen-reader-only text that still becomes visible on focus. */
+  .sr-only-focusable:not(:focus):not(:focus-within) {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+    border-width: 0;
+  }
+}
+
+/**
+ * Print: documents (invoice, quote, PO) get a clean paper rendering with the
+ * app chrome removed (spec §86).
+ */
+@media print {
+  [data-print="hide"] {
+    display: none !important;
+  }
+
+  body {
+    background: #ffffff;
+  }
+
+  .print-document {
+    box-shadow: none;
+    border: none;
+    padding: 0;
+  }
+
+  a[href]::after {
+    content: "";
+  }
+}

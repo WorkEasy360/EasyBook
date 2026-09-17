@@ -138,6 +138,46 @@ CELERY_RESULT_SERIALIZER = "json"
 CELERY_ACCEPT_CONTENT = ["json"]
 CELERY_TIMEZONE = TIME_ZONE
 
+# Every entry wraps an already-idempotent, already tenant-safe task — each
+# one iterates active organizations and opens its own core.tenancy.tenant_context()
+# per org internally (see automation/tasks.py, sales/tasks.py, purchases/tasks.py,
+# ai/rag/tasks.py); there is no request middleware inside Celery to do this for
+# them (phase 12 section 19). Interval (not crontab) schedules are deliberate:
+# these tasks only need "run at least this often", never exact wall-clock
+# timing, and calling one again before its previous run's work was due is
+# always safe by construction — so a slow run merely delays the next tick
+# rather than double-processing anything.
+CELERY_BEAT_SCHEDULE = {
+    "automation-dispatch-events": {
+        "task": "automation.tasks.dispatch_automation_events_task",
+        "schedule": timedelta(seconds=env.int("BEAT_AUTOMATION_DISPATCH_EVENTS_SECONDS", default=60)),
+    },
+    "automation-run-due-schedules": {
+        "task": "automation.tasks.run_due_schedules_task",
+        "schedule": timedelta(seconds=env.int("BEAT_AUTOMATION_RUN_DUE_SCHEDULES_SECONDS", default=300)),
+    },
+    "automation-run-due-scans": {
+        "task": "automation.tasks.run_due_scans_task",
+        "schedule": timedelta(seconds=env.int("BEAT_AUTOMATION_RUN_DUE_SCANS_SECONDS", default=300)),
+    },
+    "sales-generate-recurring-invoices": {
+        "task": "sales.tasks.generate_recurring_invoices_task",
+        "schedule": timedelta(seconds=env.int("BEAT_RECURRING_INVOICES_SECONDS", default=3600)),
+    },
+    "purchases-generate-recurring-bills": {
+        "task": "purchases.tasks.generate_recurring_bills_task",
+        "schedule": timedelta(seconds=env.int("BEAT_RECURRING_BILLS_SECONDS", default=3600)),
+    },
+    "purchases-generate-recurring-expenses": {
+        "task": "purchases.tasks.generate_recurring_expenses_task",
+        "schedule": timedelta(seconds=env.int("BEAT_RECURRING_EXPENSES_SECONDS", default=3600)),
+    },
+    "ai-purge-expired-data": {
+        "task": "ai.rag.tasks.purge_expired_ai_data",
+        "schedule": timedelta(seconds=env.int("BEAT_AI_PURGE_SECONDS", default=86400)),
+    },
+}
+
 # --- Automation (Phase 11) ---------------------------------------------------
 # Maximum causation chain depth an automation-triggered domain event may
 # reach (phase sections 49-51). Automation A -> mutation -> event -> rule B
@@ -166,12 +206,26 @@ REST_FRAMEWORK = {
     "DEFAULT_PAGINATION_CLASS": "core.pagination.DefaultPagination",
     "PAGE_SIZE": 25,
     "EXCEPTION_HANDLER": "core.exceptions.api_exception_handler",
+    # ScopedRateThrottle only protects the handful of views that explicitly
+    # set `throttle_scope` (accounts/views.py's login/register) — every other
+    # endpoint had NO rate limiting at all until User/AnonRateThrottle were
+    # added here as a blanket baseline (phase 12 section 54/64 security
+    # review finding). The FailOpen* wrappers (core/throttling.py) exist
+    # because Django's built-in Redis cache backend does not swallow
+    # connection errors — without them, a Redis outage would 500 every
+    # throttled request instead of just temporarily not enforcing limits.
     "DEFAULT_THROTTLE_CLASSES": (
-        "rest_framework.throttling.ScopedRateThrottle",
+        "core.throttling.FailOpenScopedRateThrottle",
+        "core.throttling.FailOpenUserRateThrottle",
+        "core.throttling.FailOpenAnonRateThrottle",
     ),
     "DEFAULT_THROTTLE_RATES": {
         "auth": env("THROTTLE_AUTH", default="20/min"),
         "burst": env("THROTTLE_BURST", default="60/min"),
+        # Starting points, not load-tested SLOs (phase 12 section 59-60) —
+        # tighten/loosen once real traffic gives a baseline.
+        "user": env("THROTTLE_USER", default="300/min"),
+        "anon": env("THROTTLE_ANON", default="60/min"),
     },
     "TEST_REQUEST_DEFAULT_FORMAT": "json",
 }

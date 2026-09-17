@@ -38,6 +38,7 @@ def create_account(
     parent: Account | None = None,
     description: str = "",
     is_system: bool = False,
+    is_active: bool = True,
     actor=None,
 ) -> Account:
     if parent is not None and parent.organization_id != organization.id:
@@ -54,6 +55,9 @@ def create_account(
         parent=parent,
         description=description,
         is_system=is_system,
+        # AccountSerializer exposes is_active as writable; without this
+        # parameter an ordinary create that sent it raised TypeError (HTTP 500).
+        is_active=is_active,
     )
     record_audit(
         organization_id=organization.id,

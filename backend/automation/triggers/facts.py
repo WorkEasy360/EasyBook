@@ -65,6 +65,12 @@ _FACT_BUILDERS = {
 }
 
 
+def trigger_requires_entity(trigger_type: str) -> bool:
+    """True when evaluating this trigger loads one record by id — so a manual
+    run of it is meaningless (and fails in the worker) without an entity_id."""
+    return trigger_type in _FACT_BUILDERS
+
+
 def build_facts(*, trigger_type: str, organization, entity_id, as_of=None) -> dict:
     builder = _FACT_BUILDERS.get(trigger_type)
     if builder is None:

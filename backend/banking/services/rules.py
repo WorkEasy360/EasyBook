@@ -46,6 +46,31 @@ def _validate_rule_fields(*, organization, action, target_account, vendor, custo
             )
 
 
+def _validate_rule_values(*, organization, name, amount_min, amount_max, rule_id=None) -> None:
+    """The model's constraints, checked first so ordinary input gets a sentence.
+
+    Without this a second rule with an existing name, or a range typed
+    backwards, reached the database as an IntegrityError and the API answered
+    500 — to input a person types every day.
+    """
+    if amount_min is not None and amount_min < 0:
+        # Conditions compare the ABSOLUTE amount (rule_matches), so a negative
+        # bound is never what was meant. Mirrors bank_rule_amount_min_non_negative.
+        raise ApplicationError(
+            "The minimum amount cannot be negative; direction is a separate condition.",
+            code="rule_amount_min_negative",
+        )
+    if amount_min is not None and amount_max is not None and amount_max < amount_min:
+        raise ApplicationError(
+            "The maximum amount cannot be less than the minimum amount.", code="rule_amount_range_invalid"
+        )
+    duplicates = BankRule.objects.filter(organization=organization, name=name)
+    if rule_id is not None:
+        duplicates = duplicates.exclude(pk=rule_id)
+    if duplicates.exists():
+        raise ApplicationError("A bank rule with this name already exists.", code="rule_name_taken")
+
+
 @db_transaction.atomic
 def create_rule(
     *,
@@ -76,6 +101,9 @@ def create_rule(
         raise ApplicationError(
             "A rule needs at least one condition.", code="rule_has_no_conditions"
         )
+    _validate_rule_values(
+        organization=organization, name=name, amount_min=amount_min, amount_max=amount_max
+    )
 
     rule = BankRule.objects.create(
         organization=organization,
@@ -118,6 +146,13 @@ def update_rule(*, rule: BankRule, actor=None, **fields) -> BankRule:
     merged = {field: fields.get(field, getattr(rule, field)) for field in
               ("action", "target_account", "vendor", "customer", "bank_account")}
     _validate_rule_fields(organization=rule.organization, **merged)
+    _validate_rule_values(
+        organization=rule.organization,
+        name=fields.get("name", rule.name),
+        amount_min=fields.get("amount_min", rule.amount_min),
+        amount_max=fields.get("amount_max", rule.amount_max),
+        rule_id=rule.pk,
+    )
 
     changes = {}
     for field, value in fields.items():

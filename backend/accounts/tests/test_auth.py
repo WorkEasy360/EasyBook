@@ -22,6 +22,34 @@ class RegistrationAndLoginTests(APITestCase):
             {"email": "dupe@example.com", "password": "strongpassword123"},
         )
         self.assertEqual(response.status_code, 400)
+        self.assertEqual(
+            response.data["error"]["details"]["email"], ["An account with this email address already exists."]
+        )
+
+    def test_register_rejects_duplicate_email_differing_only_in_case(self):
+        make_user(email="casey@example.com")
+        response = self.client.post(
+            "/api/v1/auth/register/",
+            {"email": "Casey@Example.com", "password": "strongpassword123"},
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("email", response.data["error"]["details"])
+        self.assertEqual(User.objects.filter(email__iexact="casey@example.com").count(), 1)
+
+    def test_register_enforces_password_validators(self):
+        cases = {
+            "common": "password123",  # CommonPasswordValidator
+            "numeric": "1234567890123",  # NumericPasswordValidator
+            "similar": "weakling@example.com",  # UserAttributeSimilarityValidator
+        }
+        for label, password in cases.items():
+            with self.subTest(label):
+                response = self.client.post(
+                    "/api/v1/auth/register/", {"email": "weakling@example.com", "password": password}
+                )
+                self.assertEqual(response.status_code, 400)
+                self.assertIn("password", response.data["error"]["details"])
+        self.assertFalse(User.objects.filter(email="weakling@example.com").exists())
 
     def test_login_returns_jwt_pair(self):
         make_user(email="login@example.com", password="strongpassword123")

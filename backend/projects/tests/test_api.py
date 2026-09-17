@@ -78,6 +78,49 @@ class ProjectApiTests(ProjectsApiTestsBase):
         self.assertEqual(self.client.get(url, **self._headers()).status_code, 200)
         self.assertEqual(self.staff_client.get(url, **self._headers()).status_code, 403)
 
+    def test_profitability_sends_money_as_strings_not_floats(self):
+        """Regression: the view returned the selector's Decimals bare, and
+        DRF's JSON encoder renders a Decimal as a float (`5850.0`)."""
+        import json
+
+        response = self.client.get(f"/api/v1/projects/{self.project.id}/profitability/", **self._headers())
+        self.assertEqual(response.status_code, 200)
+        body = json.loads(response.content)
+        for key in ("revenue", "unbilled_value", "labour_cost", "total_cost", "margin", "total_hours"):
+            self.assertIsInstance(body[key], str, key)
+        # Undefined margin stays null rather than becoming "None".
+        if body["revenue"] in ("0", "0.00"):
+            self.assertIsNone(body["margin_percent"])
+
+    def test_duplicate_project_code_and_task_name_are_400s_not_500s(self):
+        """Regression: both hit a DB UniqueConstraint as an IntegrityError."""
+        duplicate_project = self.client.post(
+            "/api/v1/projects/",
+            {"customer_id": str(self.customer.id), "project_code": "PRJ-1", "name": "Duplicate"},
+            format="json", **self._headers(),
+        )
+        self.assertEqual(duplicate_project.status_code, 400)
+        self.assertIn("project_code", duplicate_project.data["error"]["details"])
+
+        duplicate_task = self.client.post(
+            f"/api/v1/projects/{self.project.id}/tasks/",
+            {"name": "Development"},
+            format="json", **self._headers(),
+        )
+        self.assertEqual(duplicate_task.status_code, 400)
+        self.assertIn("name", duplicate_task.data["error"]["details"])
+
+        with tenant_context(organization_id=self.org_a.id):
+            other = self.project.tasks.exclude(name="Development").first()
+        renamed = self.client.patch(
+            f"/api/v1/projects/tasks/{other.id}/", {"name": "Development"}, format="json", **self._headers()
+        )
+        self.assertEqual(renamed.status_code, 400)
+        same_name = self.client.patch(
+            f"/api/v1/projects/tasks/{other.id}/", {"name": other.name}, format="json", **self._headers()
+        )
+        self.assertEqual(same_name.status_code, 200)
+
     def test_tasks_and_members_are_nested_under_the_project(self):
         tasks = self.client.get(f"/api/v1/projects/{self.project.id}/tasks/", **self._headers())
         self.assertEqual(tasks.status_code, 200)
@@ -98,6 +141,13 @@ class TimeEntryApiTests(ProjectsApiTestsBase):
             "description": "Work",
             **overrides,
         }
+
+    def test_malformed_filters_are_400s_not_500s(self):
+        # Regression: these reached the ORM unvalidated and raised a 500.
+        for params in ({"project": "notauuid"}, {"from_date": "17-09-2026"}, {"to_date": "yesterday"}):
+            with self.subTest(params=params):
+                response = self.client.get("/api/v1/time-entries/", params, **self._headers())
+                self.assertEqual(response.status_code, 400)
 
     def test_staff_can_log_their_own_time(self):
         response = self.staff_client.post(

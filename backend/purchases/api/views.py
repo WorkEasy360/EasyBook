@@ -11,6 +11,7 @@ so a viewer holding only VIEW_X can still retrieve a single record.
 
 import hashlib
 import json
+from decimal import Decimal
 
 from rest_framework import generics
 from rest_framework.response import Response
@@ -75,6 +76,22 @@ from purchases.services.recurring import (
 )
 from purchases.services.three_way_match import match_bill, match_purchase_order
 from purchases.services.vendor_credits import issue_vendor_credit, void_vendor_credit
+
+
+def _decimals_as_strings(value):
+    """Match results are plain dicts from services/three_way_match.py, not
+    serializer output, so their Decimals never pass through a DecimalField.
+    DRF's JSONEncoder renders a bare Decimal as a float — quantities and unit
+    prices would reach the client as binary floating point (100.0), unlike
+    every other amount in the API. Stringified here, at the edge, so the
+    service keeps returning exact Decimals to its Python callers."""
+    if isinstance(value, Decimal):
+        return str(value)
+    if isinstance(value, dict):
+        return {key: _decimals_as_strings(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_decimals_as_strings(item) for item in value]
+    return value
 
 
 def _hash_request_body(data) -> str:
@@ -219,11 +236,13 @@ class PurchaseOrderMatchView(OrganizationScopedMixin, APIView):
         query = ThreeWayMatchQuerySerializer(data=request.query_params)
         query.is_valid(raise_exception=True)
         return Response(
-            match_purchase_order(
-                organization=request.organization,
-                purchase_order=order,
-                quantity_tolerance=query.validated_data["quantity_tolerance"],
-                price_tolerance=query.validated_data["price_tolerance"],
+            _decimals_as_strings(
+                match_purchase_order(
+                    organization=request.organization,
+                    purchase_order=order,
+                    quantity_tolerance=query.validated_data["quantity_tolerance"],
+                    price_tolerance=query.validated_data["price_tolerance"],
+                )
             )
         )
 
@@ -433,11 +452,13 @@ class BillMatchView(OrganizationScopedMixin, APIView):
         query = ThreeWayMatchQuerySerializer(data=request.query_params)
         query.is_valid(raise_exception=True)
         return Response(
-            match_bill(
-                organization=request.organization,
-                bill=bill,
-                quantity_tolerance=query.validated_data["quantity_tolerance"],
-                price_tolerance=query.validated_data["price_tolerance"],
+            _decimals_as_strings(
+                match_bill(
+                    organization=request.organization,
+                    bill=bill,
+                    quantity_tolerance=query.validated_data["quantity_tolerance"],
+                    price_tolerance=query.validated_data["price_tolerance"],
+                )
             )
         )
 

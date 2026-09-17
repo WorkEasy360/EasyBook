@@ -35,6 +35,7 @@ INVARIANTS
 
 SECURITY
 - Upload validation never trusts the client `Content-Type` header alone — extension, canonical MIME, and (where the format allows) magic bytes must all agree (`services/validation.py`).
+- `api/views.py::DocumentUploadView.post` checks `UploadedFile.size` against `services/validation.py::max_upload_size()` BEFORE calling `.read()` — otherwise an oversized upload is pulled fully into memory before `validate_upload()` ever gets a chance to reject it on size, a memory-exhaustion DoS available to any authenticated user holding `UPLOAD_DOCUMENT` (phase 12 security review, 2026-09-16). `max_upload_size()` resolves the category from the filename alone, matching `validate_upload()`'s own extension-based lookup, specifically so it never needs to read content either.
 - Malware scanning is a hook, not a proven integration — see OWNS above.
 - OCR raw text is untrusted third-party/extracted content: matched against in search, never rendered as HTML by this backend. A frontend must escape it like any other user-supplied string (prompt-injection-aware handling if it is ever fed to an LLM in a later phase).
 

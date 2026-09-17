@@ -410,7 +410,8 @@ def issue_credit_note(*, credit_note_id, organization, actor=None) -> CreditNote
 @transaction.atomic
 def void_credit_note(*, credit_note_id, organization, actor=None) -> CreditNote:
     """Reverses an ISSUED credit note's accounting AND any restock it
-    performed — never touching the original invoice."""
+    performed. The original invoice's lines and journal are never touched; only
+    its derived settlement status is recalculated."""
     credit_note = _get_credit_note_for_update(credit_note_id=credit_note_id, organization=organization)
 
     if credit_note.status == CreditNoteStatus.VOID:
@@ -451,6 +452,17 @@ def void_credit_note(*, credit_note_id, organization, actor=None) -> CreditNote:
     credit_note.voided_by = actor
     credit_note.voided_at = timezone.now()
     credit_note.save(update_fields=["status", "voided_by", "voided_at", "updated_at"])
+
+    # The credit no longer counts against the invoice
+    # (get_invoice_amount_credited sums ISSUED notes only), so its settlement
+    # status has to be derived again — a fully credited invoice is not paid
+    # once the credit is gone.
+    if credit_note.source_invoice_id:
+        from sales.models.invoice import Invoice
+        from sales.services.invoices import refresh_invoice_payment_status
+
+        source_invoice = Invoice.objects.select_for_update().get(pk=credit_note.source_invoice_id)
+        refresh_invoice_payment_status(invoice=source_invoice, actor=actor)
 
     record_audit(
         organization_id=organization.id,

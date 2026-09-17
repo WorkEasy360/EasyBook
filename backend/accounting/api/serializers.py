@@ -20,6 +20,18 @@ class AccountSerializer(serializers.ModelSerializer):
         # is_system is platform-assigned, never client-settable through the API.
         read_only_fields = ["id", "is_system", "created_at", "updated_at"]
 
+    def validate_code(self, value):
+        # The (organization, code) UniqueConstraint is the backstop, but hitting
+        # it surfaces as an IntegrityError -> HTTP 500 for an ordinary typo.
+        # Checked here so the client gets a 400 on the `code` field instead.
+        request = self.context["request"]
+        existing = Account.objects.filter(organization=request.organization, code=value)
+        if self.instance is not None:
+            existing = existing.exclude(pk=self.instance.pk)
+        if existing.exists():
+            raise serializers.ValidationError(f"An account with code '{value}' already exists.")
+        return value
+
     def create(self, validated_data):
         request = self.context["request"]
         return create_account(organization=request.organization, actor=request.user, **validated_data)

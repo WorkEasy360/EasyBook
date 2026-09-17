@@ -32,6 +32,21 @@ def _validate_default_payable_account(*, organization, account) -> None:
         )
 
 
+def _assert_vendor_code_unused(*, organization, vendor_code: str, exclude_vendor=None) -> None:
+    """A clear domain error instead of the IntegrityError that
+    `uniq_vendor_code_per_org` raises, which surfaced as a 500 on an ordinary
+    typo'd or re-used code. The constraint stays the real backstop against a
+    concurrent insert; this is the same belt-and-braces split as
+    bills._assert_vendor_bill_number_unused."""
+    qs = Vendor.objects.filter(organization=organization, vendor_code=vendor_code)
+    if exclude_vendor is not None:
+        qs = qs.exclude(pk=exclude_vendor.pk)
+    if qs.exists():
+        raise ApplicationError(
+            f"A vendor with code '{vendor_code}' already exists.", code="duplicate_vendor_code"
+        )
+
+
 @transaction.atomic
 def create_vendor(
     *,
@@ -51,10 +66,14 @@ def create_vendor(
     payment_terms_days: int = 0,
     default_payable_account=None,
     notes: str = "",
+    # Same defect as create_customer: VendorSerializer marks is_active
+    # writable, so sending it on create raised TypeError -> 500.
+    is_active: bool = True,
     actor=None,
 ) -> Vendor:
     _validate_currency(currency=currency)
     _validate_default_payable_account(organization=organization, account=default_payable_account)
+    _assert_vendor_code_unused(organization=organization, vendor_code=vendor_code)
 
     tax_fields = clean_party_tax_fields(
         {"gstin": gstin, "pan": pan, "tax_treatment": tax_treatment},
@@ -74,6 +93,7 @@ def create_vendor(
         payment_terms_days=payment_terms_days,
         default_payable_account=default_payable_account,
         notes=notes,
+        is_active=is_active,
         **tax_fields,
     )
     record_audit(
@@ -94,6 +114,10 @@ def update_vendor(*, vendor: Vendor, actor=None, **fields) -> Vendor:
     if "default_payable_account" in fields:
         _validate_default_payable_account(
             organization=vendor.organization, account=fields["default_payable_account"]
+        )
+    if "vendor_code" in fields and fields["vendor_code"] != vendor.vendor_code:
+        _assert_vendor_code_unused(
+            organization=vendor.organization, vendor_code=fields["vendor_code"], exclude_vendor=vendor
         )
 
     # Only the tax keys actually supplied are cleaned and written back, so a

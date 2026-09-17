@@ -35,6 +35,47 @@ class CustomersAPITests(APITestCase):
         )
         self.assertEqual(response.status_code, 201, response.data)
 
+    def test_create_customer_accepts_is_active(self):
+        """CustomerSerializer lists is_active as writable, so a client may send
+        it. create_customer() had no such parameter, which made an ordinary
+        create raise TypeError and return 500 rather than 201."""
+        self.client.force_authenticate(user=self.owner_a)
+        response = self.client.post(
+            "/api/v1/sales/customers/",
+            {
+                "customer_code": "CUST-A3",
+                "display_name": "Inactive On Create",
+                "currency": self.currency.code,
+                "is_active": False,
+            },
+            **self._headers(self.org_a),
+        )
+        self.assertEqual(response.status_code, 201, response.data)
+        self.assertFalse(response.data["is_active"])
+
+    def test_create_customer_defaults_to_active(self):
+        self.client.force_authenticate(user=self.owner_a)
+        response = self.client.post(
+            "/api/v1/sales/customers/",
+            {"customer_code": "CUST-A4", "display_name": "Default Active", "currency": self.currency.code},
+            **self._headers(self.org_a),
+        )
+        self.assertEqual(response.status_code, 201, response.data)
+        self.assertTrue(response.data["is_active"])
+
+    def test_duplicate_customer_code_is_a_400_not_a_500(self):
+        # Regression: the unique constraint raised IntegrityError -> 500.
+        self.client.force_authenticate(user=self.owner_a)
+        payload = {"customer_code": "DUP-1", "display_name": "First", "currency": "INR"}
+        first = self.client.post("/api/v1/sales/customers/", payload, format="json", **self._headers(self.org_a))
+        self.assertEqual(first.status_code, 201, first.data)
+        second = self.client.post(
+            "/api/v1/sales/customers/", {**payload, "display_name": "Second"}, format="json",
+            **self._headers(self.org_a),
+        )
+        self.assertEqual(second.status_code, 400)
+        self.assertIn("duplicate_customer_code", str(second.data))
+
     def test_viewer_cannot_create_customer(self):
         self.client.force_authenticate(user=self.viewer)
         response = self.client.post(

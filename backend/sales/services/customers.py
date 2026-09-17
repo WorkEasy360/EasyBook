@@ -17,6 +17,20 @@ def _validate_currency(*, currency: Currency | None) -> Currency:
     return currency
 
 
+def _assert_customer_code_unused(*, organization, customer_code: str, exclude_customer=None) -> None:
+    """A domain error instead of the IntegrityError `uniq_customer_code_per_org`
+    raises, which surfaced as a 500 on an ordinary re-used code. The constraint
+    remains the backstop against a concurrent insert (same split as
+    purchases.services.vendors._assert_vendor_code_unused)."""
+    qs = Customer.objects.filter(organization=organization, customer_code=customer_code)
+    if exclude_customer is not None:
+        qs = qs.exclude(pk=exclude_customer.pk)
+    if qs.exists():
+        raise ApplicationError(
+            f"A customer with code '{customer_code}' already exists.", code="duplicate_customer_code"
+        )
+
+
 @transaction.atomic
 def create_customer(
     *,
@@ -36,11 +50,18 @@ def create_customer(
     payment_terms_days: int = 0,
     credit_limit=None,
     notes: str = "",
+    # CustomerSerializer exposes is_active as writable, so a client that sends
+    # it on create reached this signature and raised TypeError -> 500. Accepted
+    # here rather than made read-only on the serializer because update_customer
+    # already honours it, and an import of historical parties legitimately
+    # creates one inactive.
+    is_active: bool = True,
     actor=None,
 ) -> Customer:
     _validate_currency(currency=currency)
     if credit_limit is not None and credit_limit < 0:
         raise ApplicationError("credit_limit cannot be negative.", code="credit_limit_invalid")
+    _assert_customer_code_unused(organization=organization, customer_code=customer_code)
 
     tax_fields = clean_party_tax_fields(
         {"gstin": gstin, "pan": pan, "tax_treatment": tax_treatment},
@@ -60,6 +81,7 @@ def create_customer(
         payment_terms_days=payment_terms_days,
         credit_limit=credit_limit,
         notes=notes,
+        is_active=is_active,
         **tax_fields,
     )
     record_audit(
@@ -79,6 +101,10 @@ def update_customer(*, customer: Customer, actor=None, **fields) -> Customer:
         _validate_currency(currency=fields["currency"])
     if "credit_limit" in fields and fields["credit_limit"] is not None and fields["credit_limit"] < 0:
         raise ApplicationError("credit_limit cannot be negative.", code="credit_limit_invalid")
+    if "customer_code" in fields and fields["customer_code"] != customer.customer_code:
+        _assert_customer_code_unused(
+            organization=customer.organization, customer_code=fields["customer_code"], exclude_customer=customer
+        )
 
     # Only the tax keys actually supplied are cleaned and written back, so a
     # partial update cannot blank a field the caller never mentioned.

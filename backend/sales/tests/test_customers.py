@@ -31,11 +31,19 @@ class CustomerTests(TestCase):
         self.assertTrue(customer.is_active)
 
     def test_customer_code_unique_per_organization(self):
+        # The service refuses a re-used code with a domain error (it used to
+        # surface as an IntegrityError and a 500 at the API); the database
+        # constraint stays the backstop for a write that bypasses the service.
         with tenant_context(organization_id=self.org_a.id):
             create_customer(organization=self.org_a, customer_code="CUST-1", display_name="A", currency=self.currency)
-            with self.assertRaises(IntegrityError):
+            with self.assertRaises(ApplicationError) as raised:
                 create_customer(
                     organization=self.org_a, customer_code="CUST-1", display_name="B", currency=self.currency
+                )
+            self.assertEqual(raised.exception.get_codes(), "duplicate_customer_code")
+            with self.assertRaises(IntegrityError):
+                Customer.objects.create(
+                    organization=self.org_a, customer_code="CUST-1", display_name="Bypass", currency=self.currency
                 )
 
     def test_customer_code_can_repeat_across_organizations(self):

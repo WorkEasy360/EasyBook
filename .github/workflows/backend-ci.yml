@@ -2,10 +2,11 @@ name: Backend CI
 
 # The gate described in the build spec, as far as it can run without cloud
 # credentials: lint -> security -> dependency audit -> migration drift ->
-# the full test suite (unit, integration, API, RLS, concurrency, E2E).
-# Image build, container scan and staged deploy are deliberately absent until
-# the infrastructure phase introduces a registry and an environment to deploy
-# to; adding them now would mean a pipeline that cannot actually be green.
+# the full test suite (unit, integration, API, RLS, concurrency, E2E) ->
+# container build -> container vulnerability scan. Staged deploy is still
+# absent — that needs a registry and an environment to deploy to, neither of
+# which exists yet (phase 12 slice 3/5) — adding it now would mean a
+# pipeline that cannot actually be green.
 
 on:
   push:
@@ -159,3 +160,33 @@ jobs:
 
       - name: Test suite
         run: python manage.py test --settings=config.settings.test --verbosity=2
+
+  # Builds and scans only — pushing to a registry needs a target that doesn't
+  # exist yet (phase 12 slice 3/5: ECR + the AWS account it lives in). Runs
+  # after `test` passes: a broken app has no business being scanned or shipped.
+  container:
+    name: Build image, scan for vulnerabilities
+    needs: [static, test]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09  # v5
+
+      - name: Build image
+        run: docker build -t easybook-backend:${{ github.sha }} .
+
+      - name: Scan image for vulnerabilities (Trivy)
+        # Pinned past the March 2026 trivy-action supply-chain compromise
+        # (imposter commits injected a credential stealer into every tag
+        # 0.0.1-0.34.2 for a ~12h window; verified against
+        # aquasecurity/trivy-action's own GitHub releases, checked 2026-09-16)
+        # — v0.36.0 is a signed release published well after the incident,
+        # pinned by commit rather than tag for the same reason every other
+        # action in this workflow is.
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25  # v0.36.0
+        with:
+          image-ref: easybook-backend:${{ github.sha }}
+          format: table
+          exit-code: '1'
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          trivyignores: backend/.trivyignore

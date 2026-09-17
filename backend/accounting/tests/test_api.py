@@ -74,6 +74,60 @@ class AccountingAPITests(APITestCase):
         )
         self.assertEqual(response.status_code, 201)
 
+    def test_create_accepts_is_active(self):
+        """Regression: `is_active` is writable on AccountSerializer but
+        create_account() did not accept it, so sending it raised TypeError
+        (HTTP 500) on an ordinary create."""
+        self.client.force_authenticate(user=self.owner_a)
+        response = self.client.post(
+            "/api/v1/accounting/accounts/",
+            {"code": "6100", "name": "Dormant expense", "account_type": AccountType.EXPENSE, "is_active": False},
+            format="json",
+            **self._headers(self.org_a),
+        )
+        self.assertEqual(response.status_code, 201)
+        self.assertFalse(response.data["is_active"])
+
+        active = self.client.post(
+            "/api/v1/accounting/accounts/",
+            {"code": "6200", "name": "Live expense", "account_type": AccountType.EXPENSE, "is_active": True},
+            format="json",
+            **self._headers(self.org_a),
+        )
+        self.assertEqual(active.status_code, 201)
+        self.assertTrue(active.data["is_active"])
+
+    def test_duplicate_account_code_is_a_400_not_a_500(self):
+        """Regression: an existing code reached the DB UniqueConstraint and
+        surfaced as an unhandled IntegrityError (HTTP 500)."""
+        self.client.force_authenticate(user=self.owner_a)
+        response = self.client.post(
+            "/api/v1/accounting/accounts/",
+            {"code": "1000", "name": "Second cash", "account_type": AccountType.ASSET},
+            **self._headers(self.org_a),
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("code", response.data["error"]["details"])
+
+        renamed = self.client.patch(
+            f"/api/v1/accounting/accounts/{self.revenue.id}/",
+            {"code": "1000"},
+            format="json",
+            **self._headers(self.org_a),
+        )
+        self.assertEqual(renamed.status_code, 400)
+        self.assertIn("code", renamed.data["error"]["details"])
+
+        # Re-saving an account with its OWN code is not a duplicate, and the
+        # same code in another organization is not one either.
+        own = self.client.patch(
+            f"/api/v1/accounting/accounts/{self.cash.id}/",
+            {"code": "1000", "name": "Cash on hand"},
+            format="json",
+            **self._headers(self.org_a),
+        )
+        self.assertEqual(own.status_code, 200)
+
     def test_viewer_cannot_create_account(self):
         self.client.force_authenticate(user=self.viewer)
         response = self.client.post(

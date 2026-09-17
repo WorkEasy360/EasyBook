@@ -36,6 +36,18 @@ def _last4(value: str) -> str:
     return digits[-4:]
 
 
+def _assert_name_available(*, organization_id, name: str, exclude_id=None) -> None:
+    """uniq_bank_account_name_per_org, checked before the insert so a reused
+    name is a 400 with a sentence rather than an IntegrityError and a 500."""
+    duplicates = BankAccount.objects.filter(organization_id=organization_id, name=name)
+    if exclude_id is not None:
+        duplicates = duplicates.exclude(pk=exclude_id)
+    if duplicates.exists():
+        raise ApplicationError(
+            "A bank account with this name already exists.", code="bank_account_name_taken"
+        )
+
+
 @transaction.atomic
 def create_bank_account(
     *,
@@ -68,6 +80,7 @@ def create_bank_account(
             "That ledger account is already linked to another bank account.",
             code="account_already_linked",
         )
+    _assert_name_available(organization_id=organization.id, name=name)
     if get_provider(provider_key) is None:
         raise ApplicationError(f"Unknown bank feed provider '{provider_key}'.", code="provider_unknown")
     if opening_balance is not None and opening_balance != 0 and opening_balance_date is None:
@@ -133,6 +146,10 @@ def update_bank_account(*, bank_account: BankAccount, actor=None, **fields) -> B
             code="bank_account_field_immutable",
         )
 
+    if "name" in fields:
+        _assert_name_available(
+            organization_id=bank_account.organization_id, name=fields["name"], exclude_id=bank_account.pk
+        )
     if "provider_key" in fields and get_provider(fields["provider_key"]) is None:
         raise ApplicationError(
             f"Unknown bank feed provider '{fields['provider_key']}'.", code="provider_unknown"

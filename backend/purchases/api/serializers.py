@@ -37,7 +37,7 @@ from purchases.models.recurring import (
     RecurringExpenseTemplate,
 )
 from purchases.models.vendor import Vendor
-from purchases.models.vendor_credit import VendorCredit, VendorCreditLine
+from purchases.models.vendor_credit import VendorCredit, VendorCreditLine, VendorCreditReason
 from purchases.services.bills import create_bill, create_bill_from_goods_receipt, replace_bill_lines, void_bill
 from purchases.services.expenses import create_expense, update_expense, void_expense
 from purchases.services.goods_receipts import create_goods_receipt, replace_receipt_lines
@@ -311,15 +311,20 @@ class BillSerializer(serializers.ModelSerializer):
         ]
 
     # Derived on read, never stored — see purchases/selectors.py.
+    #
+    # Returned as a decimal STRING, like every DecimalField and like
+    # sales.InvoiceSerializer's identical fields. A SerializerMethodField
+    # returning a bare Decimal is rendered by DRF's JSONEncoder as a float
+    # (400.0), putting money on the wire in binary floating point.
     def get_amount_paid(self, obj):
         from purchases.selectors import get_bill_amount_paid
 
-        return get_bill_amount_paid(bill=obj)
+        return str(get_bill_amount_paid(bill=obj))
 
     def get_amount_due(self, obj):
         from purchases.selectors import get_bill_amount_due
 
-        return get_bill_amount_due(bill=obj)
+        return str(get_bill_amount_due(bill=obj))
 
 
 def _resolve_bill_lines(raw_lines: list[dict]) -> list[dict]:
@@ -630,7 +635,12 @@ class VendorCreditCreateSerializer(serializers.Serializer):
     vendor_id = serializers.UUIDField()
     credit_date = serializers.DateField()
     source_bill_id = serializers.UUIDField(required=False, allow_null=True, default=None)
-    reason = serializers.CharField(required=False, default="other")
+    # A ChoiceField, not a CharField: the model's TextChoices are not enforced
+    # on save, so a free-text reason ("bogus") was stored as-is on create while
+    # the update path (a ModelSerializer) rejected the same value.
+    reason = serializers.ChoiceField(
+        choices=VendorCreditReason.choices, required=False, default=VendorCreditReason.OTHER
+    )
     vendor_credit_number = serializers.CharField(required=False, allow_blank=True, default="")
     reference = serializers.CharField(required=False, allow_blank=True, default="")
     payable_account_id = serializers.UUIDField(required=False, allow_null=True, default=None)

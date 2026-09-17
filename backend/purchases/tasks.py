@@ -1,10 +1,10 @@
 """Celery tasks for purchases.
 
 Recurring bill/expense generation must run here, never inline in a web
-request (root CLAUDE.md). Periodic invocation (celery beat or an external
-scheduler) is a deployment concern left for the infrastructure phase that
-introduces one — both tasks are safe to call as often as needed, since
-generation is idempotent per occurrence (see services/recurring.py).
+request (root CLAUDE.md). Scheduled hourly via
+CELERY_BEAT_SCHEDULE["purchases-generate-recurring-bills"/"purchases-generate-recurring-expenses"]
+(config/settings/base.py, phase 12 slice 6) — safe to call more often too,
+since generation is idempotent per occurrence (see services/recurring.py).
 """
 
 from celery import shared_task

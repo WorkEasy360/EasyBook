@@ -81,8 +81,33 @@ class AuthenticatedAPIView(APIView):
             set_current_user_id(request.user.id)
 
 
-class HealthCheckView(APIView):
+class LivenessCheckView(APIView):
+    """Is the process itself alive — no dependency checks.
+
+    Used for the ECS/ALB liveness probe: it must never depend on the
+    database or Redis, or a DB/Redis blip would make the orchestrator kill
+    and restart otherwise-healthy containers, turning a brief dependency
+    outage into a full application outage (phase 12 section 46).
+    """
+
     permission_classes = [AllowAny]
+    authentication_classes = []
+    # A burst of health probes (e.g. several new ECS tasks starting up at
+    # once, all hit by the ALB within the same window) must never trip the
+    # global AnonRateThrottle baseline (config/settings/base.py) — this is a
+    # liveness signal, not user traffic, regardless of what numeric limit
+    # is configured there.
+    throttle_classes = []
+
+    def get(self, request):
+        return Response({"status": "ok"}, status=200)
+
+
+class HealthCheckView(APIView):
+    """Readiness check: can this instance actually serve traffic right now."""
+
+    permission_classes = [AllowAny]
+    throttle_classes = []  # see LivenessCheckView's comment above
     authentication_classes = []
 
     def get(self, request):

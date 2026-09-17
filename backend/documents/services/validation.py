@@ -46,6 +46,21 @@ def compute_checksum(content: bytes) -> str:
     return hashlib.sha256(content).hexdigest()
 
 
+def max_upload_size(filename: str) -> int:
+    """Resolves the size ceiling for `filename`'s extension without reading
+    any file content — callable against `UploadedFile.size` (populated by
+    Django's multipart parser without materializing the file) so an oversized
+    upload is rejected before `DocumentUploadView.post` ever calls `.read()`
+    and pulls the whole thing into memory. An unrecognized extension still
+    gets the "default" ceiling here (not "no limit") — validate_upload()
+    rejects it as unsupported either way, but that rejection must not require
+    reading an arbitrarily large file into memory first."""
+    extension = PurePosixPath(sanitize_filename(filename)).suffix.lower()
+    entry = ALLOWED_TYPES.get(extension)
+    size_category = entry[1] if entry else "default"
+    return settings.DOCUMENT_MAX_UPLOAD_SIZES.get(size_category, settings.DOCUMENT_MAX_UPLOAD_SIZES["default"])
+
+
 def validate_upload(*, filename: str, content: bytes, declared_content_type: str = "") -> tuple[str, str, str]:
     """Returns (extension, canonical_mime_type, sanitized_filename) or raises
     `ApplicationError` with a stable `code` for every rejection reason."""

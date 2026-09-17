@@ -1,3 +1,5 @@
+import uuid
+
 from rest_framework import generics
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -17,10 +19,18 @@ from automation.models.execution import AutomationExecution
 from automation.models.rule import AutomationRule, RuleStatus
 from automation.services.execution import create_manual_execution, retry_execution
 from automation.services.rules import activate_rule, archive_rule, pause_rule
+from automation.triggers.facts import trigger_requires_entity
 from automation.triggers.registry import all_triggers
 from core.exceptions import ApplicationError
 from core.views import OrganizationScopedMixin
 
+
+def _is_uuid(value: str) -> bool:
+    try:
+        uuid.UUID(str(value))
+    except (ValueError, TypeError, AttributeError):
+        return False
+    return True
 
 class AutomationRuleListCreateView(OrganizationScopedMixin, generics.ListCreateAPIView):
     permission_classes = [HasOrgPermission]
@@ -115,8 +125,19 @@ class AutomationRuleRunView(OrganizationScopedMixin, APIView):
         if rule.status != RuleStatus.ACTIVE:
             raise ApplicationError("Only an ACTIVE rule can be run manually.", code="automation_rule_not_active")
 
-        execution = create_manual_execution(rule=rule, actor=request.user)
+        # Validated BEFORE the execution exists. A record-based trigger run
+        # without a usable entity id used to create the execution and enqueue
+        # it; the worker's pk lookup then raised and left it pending forever.
         entity_id = request.data.get("entity_id") if hasattr(request.data, "get") else None
+        if entity_id and not _is_uuid(str(entity_id)):
+            raise ApplicationError("entity_id must be a valid id.", code="invalid_entity_id")
+        if not entity_id and trigger_requires_entity(rule.trigger_type):
+            raise ApplicationError(
+                f"A '{rule.trigger_type}' rule needs the entity_id of the record to run against.",
+                code="entity_id_required",
+            )
+
+        execution = create_manual_execution(rule=rule, actor=request.user)
         if entity_id:
             execution.entity_id = str(entity_id)
             execution.save(update_fields=["entity_id"])
@@ -140,6 +161,9 @@ class AutomationExecutionListView(OrganizationScopedMixin, generics.ListAPIView)
         qs = AutomationExecution.objects.select_related("rule").prefetch_related("steps")
         rule_id = self.request.query_params.get("rule")
         if rule_id:
+            # A non-UUID made the filter raise Django's ValidationError -> 500.
+            if not _is_uuid(rule_id):
+                raise ApplicationError("rule must be a valid id.", code="invalid_rule_id")
             qs = qs.filter(rule_id=rule_id)
         status_filter = self.request.query_params.get("status")
         if status_filter:

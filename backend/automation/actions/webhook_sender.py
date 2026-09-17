@@ -21,6 +21,26 @@ from automation.actions.errors import AutomationTransientError
 DEFAULT_TIMEOUT_SECONDS = 10
 
 
+class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Refuse every redirect rather than follow it.
+
+    `webhook_security.validate_webhook_url` checks the URL once, before this
+    module ever sees it — urllib's DEFAULT opener follows a 3xx response
+    automatically, which would let a webhook endpoint that passed validation
+    redirect the actual request to an unvalidated target (e.g. the cloud
+    metadata address, 169.254.169.254) entirely unchecked. A legitimate
+    webhook receiver has no reason to redirect a POST anyway, so the 3xx
+    response is returned to the caller as-is (recorded as that status code)
+    instead of raising or retrying.
+    """
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+_OPENER = urllib.request.build_opener(_NoRedirectHandler)
+
+
 class WebhookResponse:
     def __init__(self, *, http_status: int, latency_ms: int):
         self.http_status = http_status
@@ -31,7 +51,7 @@ def _http_send(*, url: str, payload: bytes, headers: dict, timeout: float) -> We
     request = urllib.request.Request(url, data=payload, headers=headers, method="POST")  # noqa: S310 -- url is validated by webhook_security.validate_webhook_url before this is ever called
     started = time.monotonic()
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:  # noqa: S310 # nosec B310 -- url is validated by webhook_security.validate_webhook_url (https+SSRF-checked) before this is ever called
+        with _OPENER.open(request, timeout=timeout) as response:  # nosec B310 -- url is validated by webhook_security.validate_webhook_url (https+SSRF-checked) before this is ever called; _OPENER never follows redirects
             status = response.status
     except urllib.error.HTTPError as exc:
         status = exc.code

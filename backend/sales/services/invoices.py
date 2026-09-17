@@ -491,13 +491,18 @@ def void_invoice(*, invoice_id, organization, actor=None, reason: str = "") -> I
 
 def refresh_invoice_payment_status(*, invoice: Invoice, actor=None) -> Invoice:
     """Called only by services/payments.py (after a payment allocation) and
-    services/credit_notes.py (after a credit note is issued against this
-    invoice) — never by a user-facing endpoint. Derives SENT ->
-    PARTIALLY_PAID -> PAID from the combined effect of payments AND credit
-    notes (see selectors.py::get_invoice_amount_due) — either one alone can
-    fully settle an invoice, so both must be considered together. A no-op
-    for any other status."""
-    if invoice.status not in (InvoiceStatus.SENT, InvoiceStatus.PARTIALLY_PAID):
+    services/credit_notes.py (after a credit note against this invoice is
+    issued OR voided) — never by a user-facing endpoint. Derives the status
+    from the combined effect of payments AND credit notes (see
+    selectors.py::get_invoice_amount_due) — either one alone can fully settle
+    an invoice, so both must be considered together.
+
+    It works in BOTH directions. Voiding a credit note raises the amount due
+    again, so a PAID invoice must fall back to PARTIALLY_PAID or SENT;
+    otherwise it would keep a "paid" status with money still owed and drop
+    out of every report that selects open invoices by status. A no-op for
+    DRAFT and VOID."""
+    if invoice.status not in (InvoiceStatus.SENT, InvoiceStatus.PARTIALLY_PAID, InvoiceStatus.PAID):
         return invoice
 
     from sales.selectors import get_invoice_amount_due
@@ -508,7 +513,7 @@ def refresh_invoice_payment_status(*, invoice: Invoice, actor=None) -> Invoice:
     elif due < invoice.total:
         new_status = InvoiceStatus.PARTIALLY_PAID
     else:
-        new_status = invoice.status
+        new_status = InvoiceStatus.SENT
 
     if new_status == invoice.status:
         return invoice

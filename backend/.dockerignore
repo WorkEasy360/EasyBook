@@ -1,0 +1,15 @@
+.venv/
+.git/
+.github/
+staticfiles/
+private_media/
+__pycache__/
+**/__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+.env
+.env.*
+!.env.example
+htmlcov/
+.coverage

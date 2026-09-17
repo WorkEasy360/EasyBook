@@ -1,0 +1,23 @@
+# Justified suppressions only — never add an entry here without the
+# investigation that earned it. Re-verify each one whenever it starts
+# blocking CI again (a base image bump can pick up a real fix).
+
+# pip's own vendored internal dependency (pip/_vendor/msgpack), used only by
+# pip's own HTTP cache — never imported or reachable by the running app
+# (PATH always resolves python/gunicorn/celery to /opt/venv; the process
+# never calls into pip at runtime). Confirmed present even in pip 26.2.1
+# (the latest release as of 2026-09-16) via a real `trivy image` scan and a
+# full filesystem search of the built image — not something this repo's
+# Dockerfile can fix; only an upstream pip release that bumps its vendored
+# copy can.
+GHSA-6v7p-g79w-8964
+
+# Not an actual installed "setuptools 70.3.0" package: every real setuptools
+# install in the built image (system and venv) is upgraded to 84.0.0 (see
+# Dockerfile's `pip install --upgrade ... setuptools`) and a full filesystem
+# search found no 70.3.0 directory/dist-info anywhere. This is very likely
+# build-provenance metadata embedded in pip 26.2.1's own official wheel (the
+# setuptools version pip's wheel was built with), which a metadata parser can
+# mistake for an installed dependency. Confirmed via `trivy image` +
+# filesystem search, 2026-09-16.
+CVE-2025-47273

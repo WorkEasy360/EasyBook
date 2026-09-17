@@ -1,4 +1,5 @@
 import datetime
+import logging
 
 from django.db import IntegrityError, transaction
 from django.utils import timezone
@@ -8,6 +9,7 @@ from audit.services import record as record_audit
 from core.exceptions import ApplicationError
 from core.recurrence import advance_occurrence
 from core.tenancy import tenant_context
+from items.models.item import ItemType
 from sales.models.customer import Customer
 from sales.models.invoice import Invoice
 from sales.models.recurring_invoice import (
@@ -20,6 +22,25 @@ from sales.services.customers import assert_customer_usable_for_new_transaction
 from sales.services.invoices import create_invoice
 from sales.services.line_items import validate_item_for_line
 from tax.services.documents import carry_forward_tax, resolve_document_tax
+
+logger = logging.getLogger("sales.recurring")
+
+
+def _assert_warehouse_for_stock_lines(*, lines: list[dict], warehouse) -> None:
+    """A generated invoice issues stock for every tracked product line on
+    posting (no delivery challan links a recurring invoice), and
+    sales.services.invoices refuses such a line without a warehouse
+    (warehouse_required). Accepting the template anyway meant every scheduled
+    occurrence failed later, in a background job, instead of now."""
+    if warehouse is not None:
+        return
+    for line in lines:
+        item = line["item"]
+        if item.item_type == ItemType.PRODUCT and item.track_inventory:
+            raise ApplicationError(
+                f"'{item.name}' tracks inventory, so the template needs a warehouse to issue it from.",
+                code="warehouse_required",
+            )
 
 
 def _validate_line(*, organization, line: dict) -> dict:
@@ -73,6 +94,7 @@ def create_recurring_template(
 
     currency = currency or customer.currency
     validated_lines = [_validate_line(organization=organization, line=line) for line in lines]
+    _assert_warehouse_for_stock_lines(lines=validated_lines, warehouse=warehouse)
 
     tax_treatment = resolve_document_tax(
         organization=organization, party=customer, place_of_supply=place_of_supply
@@ -116,6 +138,12 @@ def create_recurring_template(
 
 @transaction.atomic
 def update_recurring_template(*, template: RecurringInvoiceTemplate, lines: list[dict] | None = None, actor=None, **fields) -> RecurringInvoiceTemplate:
+    # The same rule create enforces; the update path skipped it and saved an
+    # end date before the start date.
+    end_date = fields.get("end_date", template.end_date)
+    if end_date is not None and end_date < template.start_date:
+        raise ApplicationError("end_date cannot be before start_date.", code="recurring_end_before_start")
+
     changes = {}
     for field, value in fields.items():
         if getattr(template, field) == value:
@@ -129,6 +157,7 @@ def update_recurring_template(*, template: RecurringInvoiceTemplate, lines: list
         if not lines:
             raise ApplicationError("A recurring invoice template needs at least one line.", code="recurring_no_lines")
         validated_lines = [_validate_line(organization=template.organization, line=line) for line in lines]
+        _assert_warehouse_for_stock_lines(lines=validated_lines, warehouse=template.warehouse)
         template.lines.all().delete()
         for index, row in enumerate(validated_lines, start=1):
             RecurringInvoiceTemplateLine.objects.create(
@@ -262,7 +291,22 @@ def generate_due_invoices(*, as_of=None, actor=None) -> list[Invoice]:
                         break
                     if template.end_date and template.next_run_at > template.end_date:
                         break
-                    invoice = _generate_one_occurrence(template_id=template_id, organization=organization, actor=actor)
+                    try:
+                        invoice = _generate_one_occurrence(
+                            template_id=template_id, organization=organization, actor=actor
+                        )
+                    except Exception:
+                        # One template that cannot generate (an item since
+                        # deactivated, an account removed) must not stop every
+                        # other template and organization in this run. The
+                        # occurrence rolled back atomically and next_run_at did
+                        # not advance, so it is retried on the next run once
+                        # fixed; the log line is what surfaces it.
+                        logger.exception(
+                            "Recurring invoice generation failed",
+                            extra={"organization_id": str(organization.id), "template_id": str(template_id)},
+                        )
+                        break
                     if invoice is None:
                         break
                     generated.append(invoice)

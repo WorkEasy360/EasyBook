@@ -9,22 +9,37 @@ organization is enforced from AIRequestLog.
 """
 
 import datetime
+import logging
 import time
 
 from django.core.cache import cache
 from django.db.models import Sum
 from django.utils import timezone
+from redis.exceptions import RedisError
 
 from ai.orchestration.errors import AskBooksError
 
+logger = logging.getLogger("django.request")
+
 
 def _consume(key: str, limit: int, ttl: int) -> bool:
-    cache.add(key, 0, ttl)
+    # Fails open on a cache-backend outage (RedisError), same reasoning and
+    # mechanism as core/throttling.py's FailOpen*RateThrottle: rate limiting
+    # is a protective layer, not a correctness-critical one — Redis being
+    # down must degrade "Ask Books requests aren't rate-limited for a bit",
+    # never "Ask Books is down" (it would otherwise 500 every request here,
+    # since Django's built-in Redis cache backend does not swallow
+    # connection errors on its own).
     try:
-        count = cache.incr(key)
-    except ValueError:  # expired between add and incr
-        cache.add(key, 1, ttl)
-        count = 1
+        cache.add(key, 0, ttl)
+        try:
+            count = cache.incr(key)
+        except ValueError:  # expired between add and incr
+            cache.add(key, 1, ttl)
+            count = 1
+    except RedisError:
+        logger.warning(f"ai_rate_limit_backend_unavailable key={key}")
+        return True
     return count <= limit
 
 

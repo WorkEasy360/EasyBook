@@ -29,3 +29,15 @@ coverage/
 Thumbs.db
 
 # Docker volumes are managed by Docker itself, not the repo
+
+# Terraform (infrastructure/terraform) — .terraform.lock.hcl IS committed
+# (pins provider versions); local state/plan files and the downloaded
+# provider cache are not.
+infrastructure/terraform/.terraform/
+infrastructure/terraform/*.tfstate
+infrastructure/terraform/*.tfstate.*
+infrastructure/terraform/*.tfplan
+infrastructure/terraform/*.tfvars
+!infrastructure/terraform/*.tfvars.example
+crash.log
+crash.*.log

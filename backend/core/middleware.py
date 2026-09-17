@@ -2,6 +2,13 @@ import uuid
 
 from core.tenancy import clear_tenant_context
 
+# View names that never touch tenant context and must stay independent of the
+# database even during an outage (core/views.py:LivenessCheckView) — skipped
+# here rather than having clear_tenant_context() try to infer "was anything
+# set this request", which core/tenancy.py explains is unsafe to infer from
+# contextvar state alone.
+_TENANT_CONTEXT_EXEMPT_VIEW_NAMES = frozenset({"liveness-check"})
+
 
 class RequestIDMiddleware:
     """Attaches a request_id (from X-Request-ID or generated) for log correlation."""
@@ -16,7 +23,9 @@ class RequestIDMiddleware:
         finally:
             # Contextvars persist per-thread across requests under some servers;
             # always drop tenant scope once the response is built.
-            clear_tenant_context()
+            view_name = getattr(getattr(request, "resolver_match", None), "view_name", None)
+            if view_name not in _TENANT_CONTEXT_EXEMPT_VIEW_NAMES:
+                clear_tenant_context()
         response["X-Request-ID"] = request.request_id
         return response
 

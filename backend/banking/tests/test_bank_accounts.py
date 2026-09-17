@@ -150,3 +150,36 @@ class BankAccountTenantTests(BankingTestsBase):
             self.assertEqual(BankAccount.objects.count(), 3)
         with tenant_context(organization_id=self.org_b.id):
             self.assertEqual(BankAccount.objects.count(), 1)
+
+
+class BankAccountNameValidationTests(BankingTestsBase):
+    """Regression: a reused name hit uniq_bank_account_name_per_org as an
+    IntegrityError and the API answered 500."""
+
+    def test_a_duplicate_name_is_refused_with_a_code(self):
+        with tenant_context(organization_id=self.org_a.id):
+            spare = create_account(
+                organization=self.org_a, code="1950", name="Spare Bank", account_type=AccountType.ASSET
+            )
+            with self.assertRaises(ApplicationError) as ctx:
+                create_bank_account(
+                    organization=self.org_a, name="HDFC Current", account=spare, currency=self.currency
+                )
+            self.assertEqual(ctx.exception.get_codes(), "bank_account_name_taken")
+
+    def test_renaming_onto_another_account_is_refused_but_keeping_the_name_is_not(self):
+        with tenant_context(organization_id=self.org_a.id):
+            update_bank_account(bank_account=self.savings, name="HDFC Savings", notes="unchanged name")
+            with self.assertRaises(ApplicationError) as ctx:
+                update_bank_account(bank_account=self.savings, name="HDFC Current")
+            self.assertEqual(ctx.exception.get_codes(), "bank_account_name_taken")
+
+    def test_the_name_is_unique_per_organization_only(self):
+        with tenant_context(organization_id=self.org_b.id):
+            spare = create_account(
+                organization=self.org_b, code="1950", name="Spare Bank", account_type=AccountType.ASSET
+            )
+            created = create_bank_account(
+                organization=self.org_b, name="HDFC Current", account=spare, currency=self.currency
+            )
+            self.assertEqual(created.name, "HDFC Current")
