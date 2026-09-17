@@ -9,13 +9,16 @@ the same pattern as sales.services.recurring_invoices.generate_due_invoices
 regardless.
 """
 
+import datetime
+
 from celery import shared_task
 from celery.utils.log import get_task_logger
 from django.db import transaction
+from django.db.models import Q
 from django.utils import timezone
 
 from automation.models.event import AutomationEvent
-from automation.models.execution import AutomationExecution, TriggerSource
+from automation.models.execution import AutomationExecution, ExecutionStatus, TriggerSource
 from automation.models.rule import RuleStatus
 from automation.selectors import get_active_rules_for_trigger
 from core.tenancy import tenant_context
@@ -198,3 +201,73 @@ def run_due_scans_task():
             total += _run_due_scans_for_org(organization, as_of)
     logger.info("automation_scans_fired", extra={"fired": total, "as_of": str(as_of)})
     return {"fired": total}
+
+
+# Recovery sweeper thresholds. PENDING must wait out any healthy enqueue ->
+# pickup delay; RUNNING must outlast run_execution_task's hard time limit plus
+# its longest retry countdown (retry_backoff_max), so a retry that is merely
+# waiting is never raced. The attempt budget bounds recovery: past it the
+# execution is failed visibly (human-retryable) instead of re-enqueued forever.
+RECOVERY_PENDING_AFTER = datetime.timedelta(minutes=10)
+RECOVERY_RUNNING_AFTER = datetime.timedelta(minutes=90)
+RECOVERY_MAX_ATTEMPTS = 10
+RECOVERY_BATCH_SIZE = 200
+
+
+def _recover_stalled_executions_for_org(organization, now) -> tuple[int, int]:
+    recovered = abandoned = 0
+    stalled = (
+        AutomationExecution.objects.select_for_update(skip_locked=True)
+        .filter(
+            Q(status=ExecutionStatus.PENDING, updated_at__lt=now - RECOVERY_PENDING_AFTER)
+            | Q(status=ExecutionStatus.RUNNING, updated_at__lt=now - RECOVERY_RUNNING_AFTER)
+        )
+        .order_by("updated_at")[:RECOVERY_BATCH_SIZE]
+    )
+    for execution in stalled:
+        if execution.attempt_count >= RECOVERY_MAX_ATTEMPTS:
+            execution.status = ExecutionStatus.FAILED
+            execution.finished_at = now
+            execution.error_summary = (
+                f"Stopped by automatic recovery after {execution.attempt_count} attempts without finishing. "
+                "Retry it once the cause is fixed."
+            )
+            execution.save(update_fields=["status", "finished_at", "error_summary", "updated_at"])
+            logger.warning(
+                "automation_execution_recovery_abandoned",
+                extra={"execution_id": str(execution.id), "attempt": execution.attempt_count},
+            )
+            abandoned += 1
+            continue
+        # Touching updated_at keeps the next sweep from re-enqueuing it again
+        # while this message is still on its way to a worker.
+        execution.save(update_fields=["updated_at"])
+        transaction.on_commit(
+            lambda execution_id=execution.id, org_id=str(organization.id): run_execution_task.delay(
+                str(execution_id), org_id
+            )
+        )
+        logger.info(
+            "automation_execution_recovery_requeued",
+            extra={"execution_id": str(execution.id), "status": execution.status, "attempt": execution.attempt_count},
+        )
+        recovered += 1
+    return recovered, abandoned
+
+
+@shared_task
+def recover_stalled_executions_task():
+    """Re-enqueues executions no worker will otherwise ever run: a lost
+    enqueue leaves them PENDING, a worker killed mid-run leaves them RUNNING.
+    Safe because run_execution never repeats a SUCCEEDED step."""
+    from accounts.models import Organization
+
+    now = timezone.now()
+    totals = {"recovered": 0, "abandoned": 0}
+    for organization in Organization.objects.filter(is_active=True):
+        with tenant_context(organization_id=organization.id):
+            recovered, abandoned = _recover_stalled_executions_for_org(organization, now)
+        totals["recovered"] += recovered
+        totals["abandoned"] += abandoned
+    logger.info("automation_executions_recovery_swept", extra=totals)
+    return totals

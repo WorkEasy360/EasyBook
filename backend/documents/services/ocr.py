@@ -108,3 +108,63 @@ def process_ocr(*, document_id) -> None:
         object_type="documents.Document", object_id=document.id,
         changes={"ocr_status": new_status, "provider": result.provider},
     )
+
+
+def recover_stalled_ocr(*, queued_before, processing_before, batch_size: int = 200) -> dict:
+    """Recovery sweeper body (documents/tasks.py::recover_stalled_ocr_task),
+    run inside the caller's tenant_context.
+
+    QUEUED past `queued_before`: the task message was lost — re-enqueue it
+    (process_ocr only ever claims a QUEUED document, so a duplicate is a
+    no-op). PROCESSING past `processing_before` (longer than run_ocr_task's
+    hard time limit): the worker died mid-extraction and a redelivered message
+    will rightly refuse to reprocess it — fail it visibly instead, which is
+    also the state `request_ocr` accepts a fresh request from.
+    """
+    from documents.tasks import run_ocr_task
+
+    requeued = failed = 0
+    stalled_queued = (
+        Document.objects.select_for_update(skip_locked=True)
+        .filter(ocr_status=OCRStatus.QUEUED, updated_at__lt=queued_before)
+        .order_by("updated_at")[:batch_size]
+    )
+    for document in stalled_queued:
+        # Touching updated_at keeps the next sweep from re-enqueuing it again
+        # while this message is still on its way to a worker.
+        document.save(update_fields=["updated_at"])
+        transaction.on_commit(
+            lambda document_id=str(document.id), organization_id=str(document.organization_id): run_ocr_task.delay(
+                document_id, organization_id
+            )
+        )
+        requeued += 1
+
+    stalled_processing = (
+        Document.objects.select_for_update(skip_locked=True)
+        .filter(ocr_status=OCRStatus.PROCESSING, updated_at__lt=processing_before)
+        .order_by("updated_at")[:batch_size]
+    )
+    for document in stalled_processing:
+        OCRResult.objects.update_or_create(
+            document=document,
+            defaults={
+                "organization": document.organization,
+                "provider": "none",
+                "provider_version": "",
+                "raw_text": "",
+                "structured_payload": {},
+                "confidence": None,
+                "error_code": "ocr_worker_lost",
+                "error_message": "Text extraction did not finish. Request OCR again.",
+                "processed_at": timezone.now(),
+            },
+        )
+        transition_ocr_status(document, OCRStatus.FAILED)
+        record_audit(
+            organization_id=document.organization_id, action=AuditLog.Action.UPDATE,
+            object_type="documents.Document", object_id=document.id,
+            changes={"ocr_status": OCRStatus.FAILED, "reason": "ocr_worker_lost"},
+        )
+        failed += 1
+    return {"requeued": requeued, "failed": failed}

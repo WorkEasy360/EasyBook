@@ -150,6 +150,72 @@ CELERY_RESULT_SERIALIZER = "json"
 CELERY_ACCEPT_CONTENT = ["json"]
 CELERY_TIMEZONE = TIME_ZONE
 
+# Execution policy. config/tests/test_celery_task_policy.py fails if a task is
+# left unrouted, routed to a queue no worker in infrastructure/terraform
+# consumes, or left without time limits.
+#
+# Routing: one queue per worker service (worker-critical: critical,
+# worker-default: celery, worker-heavy: heavy, worker-ai: ai). Unrouted, every
+# task landed on `celery` and the dedicated workers sat idle.
+CELERY_TASK_DEFAULT_QUEUE = "celery"
+CELERY_TASK_ROUTES = {
+    # Financial-document generation and the automation outbox: short, and must
+    # never wait behind OCR or AI work.
+    "sales.tasks.generate_recurring_invoices_task": {"queue": "critical"},
+    "purchases.tasks.generate_recurring_bills_task": {"queue": "critical"},
+    "purchases.tasks.generate_recurring_expenses_task": {"queue": "critical"},
+    "automation.tasks.dispatch_automation_events_task": {"queue": "critical"},
+    # Automation runs (may wait on outbound webhooks), schedulers, sweepers.
+    "automation.tasks.run_execution_task": {"queue": "celery"},
+    "automation.tasks.run_due_schedules_task": {"queue": "celery"},
+    "automation.tasks.run_due_scans_task": {"queue": "celery"},
+    "automation.tasks.recover_stalled_executions_task": {"queue": "celery"},
+    "documents.tasks.recover_stalled_ocr_task": {"queue": "celery"},
+    # Extraction and bulk retention deletes.
+    "documents.tasks.run_ocr_task": {"queue": "heavy"},
+    "ai.rag.tasks.purge_expired_ai_data": {"queue": "heavy"},
+    # Embedding calls to the AI provider.
+    "ai.rag.tasks.index_document_task": {"queue": "ai"},
+}
+
+# Acknowledge after the task runs, one message per process at a time, so a
+# worker container killed mid-task (deploy, scale-in, OOM) leaves the message
+# to be redelivered instead of losing it. Every task is idempotent per
+# occurrence. task_reject_on_worker_lost stays at its default (off): Celery
+# warns it can loop a poison message; work lost that way is picked up by the
+# recovery sweepers below instead.
+CELERY_TASK_ACKS_LATE = True
+CELERY_WORKER_PREFETCH_MULTIPLIER = 1
+# With late acks, a lost broker connection otherwise redelivers tasks that are
+# still running elsewhere (Celery documents this default flipping in 6.0).
+CELERY_WORKER_CANCEL_LONG_RUNNING_TASKS_ON_CONNECTION_LOSS = True
+
+# Every task gets a soft limit (SoftTimeLimitExceeded, catchable) and a hard
+# limit (process killed and replaced). Listed per task, not via "*", so a new
+# task without a deliberate limit fails the policy test.
+_TASK_LIMITS_SHORT = {"soft_time_limit": 300, "time_limit": 330}
+_TASK_LIMITS_LONG = {"soft_time_limit": 1500, "time_limit": 1560}
+CELERY_TASK_ANNOTATIONS = {
+    "automation.tasks.dispatch_automation_events_task": _TASK_LIMITS_SHORT,
+    "automation.tasks.run_execution_task": _TASK_LIMITS_SHORT,
+    "automation.tasks.run_due_schedules_task": _TASK_LIMITS_SHORT,
+    "automation.tasks.run_due_scans_task": _TASK_LIMITS_SHORT,
+    "automation.tasks.recover_stalled_executions_task": _TASK_LIMITS_SHORT,
+    "documents.tasks.recover_stalled_ocr_task": _TASK_LIMITS_SHORT,
+    "sales.tasks.generate_recurring_invoices_task": _TASK_LIMITS_LONG,
+    "purchases.tasks.generate_recurring_bills_task": _TASK_LIMITS_LONG,
+    "purchases.tasks.generate_recurring_expenses_task": _TASK_LIMITS_LONG,
+    "documents.tasks.run_ocr_task": _TASK_LIMITS_LONG,
+    "ai.rag.tasks.index_document_task": _TASK_LIMITS_LONG,
+    "ai.rag.tasks.purge_expired_ai_data": _TASK_LIMITS_LONG,
+}
+
+# Redis redelivers an unacknowledged message once this passes, and an ETA/
+# countdown retry stays unacknowledged while it waits — so this must outlast
+# the longest hard limit plus the longest retry countdown
+# (automation run_execution_task: retry_backoff_max=3600), or work runs twice.
+CELERY_BROKER_TRANSPORT_OPTIONS = {"visibility_timeout": 7200}
+
 # Every entry wraps an already-idempotent, already tenant-safe task — each
 # one iterates active organizations and opens its own core.tenancy.tenant_context()
 # per org internally (see automation/tasks.py, sales/tasks.py, purchases/tasks.py,
@@ -187,6 +253,16 @@ CELERY_BEAT_SCHEDULE = {
     "ai-purge-expired-data": {
         "task": "ai.rag.tasks.purge_expired_ai_data",
         "schedule": timedelta(seconds=env.int("BEAT_AI_PURGE_SECONDS", default=86400)),
+    },
+    # Recovery sweepers: work whose task message was lost (failed enqueue,
+    # worker killed mid-run) is otherwise stuck PENDING/QUEUED/RUNNING forever.
+    "automation-recover-stalled-executions": {
+        "task": "automation.tasks.recover_stalled_executions_task",
+        "schedule": timedelta(seconds=env.int("BEAT_AUTOMATION_RECOVERY_SECONDS", default=300)),
+    },
+    "documents-recover-stalled-ocr": {
+        "task": "documents.tasks.recover_stalled_ocr_task",
+        "schedule": timedelta(seconds=env.int("BEAT_OCR_RECOVERY_SECONDS", default=300)),
     },
 }
 
