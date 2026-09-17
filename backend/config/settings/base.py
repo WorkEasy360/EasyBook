@@ -3,6 +3,7 @@ Base Django settings shared by all environments.
 Environment-specific overrides live in dev.py / production.py / test.py.
 """
 
+import ssl
 from datetime import timedelta
 from pathlib import Path
 
@@ -133,6 +134,17 @@ CACHES = {
 
 CELERY_BROKER_URL = env("CELERY_BROKER_URL", default=REDIS_URL)
 CELERY_RESULT_BACKEND = env("CELERY_RESULT_BACKEND", default=REDIS_URL)
+# ElastiCache runs with transit encryption, so production URLs are rediss://
+# (infrastructure/terraform/ecs.tf). Neither Celery library is safe with a bare
+# rediss:// URL: the Redis result backend raises ValueError without an explicit
+# ssl_cert_reqs, and kombu's broker transport silently falls back to CERT_NONE
+# (no certificate verification). ElastiCache serves publicly trusted ACM
+# certificates, so the system CA bundle verifies them. The TLS options are only
+# set for rediss:// — Celery rejects them alongside a plain redis:// URL.
+# See config/tests/test_celery_redis_tls.py.
+_REDIS_TLS_OPTIONS = {"ssl_cert_reqs": ssl.CERT_REQUIRED}
+CELERY_BROKER_USE_SSL = _REDIS_TLS_OPTIONS if CELERY_BROKER_URL.startswith("rediss://") else None
+CELERY_REDIS_BACKEND_USE_SSL = _REDIS_TLS_OPTIONS if CELERY_RESULT_BACKEND.startswith("rediss://") else None
 CELERY_TASK_SERIALIZER = "json"
 CELERY_RESULT_SERIALIZER = "json"
 CELERY_ACCEPT_CONTENT = ["json"]
