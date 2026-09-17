@@ -1,0 +1,54 @@
+name: Frontend CI
+
+# The frontend's own gate (frontend/CLAUDE.md): typecheck -> lint (0 errors
+# AND 0 warnings) -> unit tests -> production build. `next build` is part of
+# the gate because typedRoutes turns a broken <Link> into a build error.
+# Playwright E2E needs a running backend and is not part of this gate yet.
+#
+# Exists because the whole frontend once lived only on a developer's disk —
+# nothing in CI would have noticed it failing to build.
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: frontend-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    working-directory: frontend
+
+jobs:
+  check:
+    name: Typecheck, lint, unit tests, build
+    runs-on: ubuntu-latest
+    steps:
+      # Pinned to commit SHAs, not tags — see backend-ci.yml.
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09  # v5
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Lint
+        run: npx eslint . --max-warnings 0
+
+      - name: Unit tests
+        run: npm test
+
+      - name: Production build
+        run: npm run build
