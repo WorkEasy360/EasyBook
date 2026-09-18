@@ -1,0 +1,7 @@
+# Copy to <environment>.s3.tfbackend and fill in; pass with
+#   terraform init -backend-config=backend/<environment>.s3.tfbackend
+# Nothing here is secret (credentials come from the AWS environment, never this
+# file), so the filled-in copies may be committed.
+bucket = "easybook-terraform-state-<account-id>" # bootstrap/ output state_bucket_name
+key    = "easybook/<environment>/terraform.tfstate"
+region = "ap-south-1"

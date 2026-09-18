@@ -54,3 +54,25 @@ jobs:
       # never come back: health checks, deployment rollback, WAF handling.
       - name: Plan-level tests
         run: terraform test
+
+      # State must be remote and locked. `terraform init` with no backend
+      # config has to REFUSE rather than quietly keep state on whatever
+      # machine ran it, which is what an unconfigured (or commented-out)
+      # backend block does.
+      - name: Remote state is configured and locked
+        run: |
+          grep -Eq '^[[:space:]]*backend "s3" \{' versions.tf
+          grep -Eq '^[[:space:]]*use_lockfile[[:space:]]*=[[:space:]]*true' versions.tf
+          rm -rf .terraform
+          if terraform init -input=false > init.log 2>&1; then
+            echo "terraform init without -backend-config must fail, but it succeeded:"
+            cat init.log
+            exit 1
+          fi
+          grep -q 'required by the backend' init.log
+
+      - name: Bootstrap module validates
+        working-directory: infrastructure/terraform/bootstrap
+        run: |
+          terraform init -backend=false -input=false
+          terraform validate

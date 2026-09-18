@@ -55,13 +55,39 @@ cancels statements after 30s, which a large index build can exceed); do not bake
 automatic `migrate` into every container's normal startup — phase 12 section
 48-49 on expand/migrate/contract deploys and avoiding concurrent migration races).
 
-## Bootstrapping remote state
+## Remote state (required)
 
-`versions.tf`'s `backend "s3"` block is commented out because the bucket and
-DynamoDB lock table it needs cannot themselves be created by the Terraform
-run that would use them. Create both by hand (or via a throwaway local-backend
-`apply` of just those two resources) first, then uncomment the block and run
-`terraform init -migrate-state`.
+State lives in S3 with locking (`versions.tf`). Local state is not an option:
+two people — or a person and CI — applying at once overwrite each other, and
+the only record of what Terraform manages would sit on one laptop.
+
+Locking uses S3-native lock files (`use_lockfile`, Terraform >= 1.11), so there
+is no DynamoDB table to create or pay for; the DynamoDB lock arguments are
+deprecated.
+
+The state bucket cannot be created by the run whose state it holds, so
+`bootstrap/` creates it once per account, with local state of its own:
+
+```
+cd bootstrap
+terraform init
+terraform apply -var state_bucket_name=easybook-terraform-state-<account-id>
+```
+
+It creates a versioned, KMS-encrypted, public-access-blocked, TLS-only bucket
+with `prevent_destroy` set.
+
+Then initialise this stack against it, once per environment (the backend is a
+partial configuration: nothing environment-specific is hard-coded):
+
+```
+cp backend/example.s3.tfbackend backend/staging.s3.tfbackend   # fill in
+terraform init -backend-config=backend/staging.s3.tfbackend
+```
+
+`terraform init` with no `-backend-config` fails ("The attribute \"bucket\" is
+required by the backend") rather than silently falling back to local state.
+Each environment gets its own state key; never share one.
 
 ## Variables that have no safe default
 
