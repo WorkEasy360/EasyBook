@@ -1,5 +1,6 @@
 import "server-only";
 
+import { forwardedClientHeaders } from "@/lib/security/client-ip";
 import { NetworkError, TimeoutError, toApiError } from "./errors";
 import { DEFAULT_TIMEOUT_MS, apiBaseUrl } from "./config";
 
@@ -19,6 +20,11 @@ export interface UpstreamRequest {
   headers?: HeadersInit;
   timeoutMs?: number;
   signal?: AbortSignal;
+  /**
+   * The browser's address, for Django's rate limiting only (Django sees this
+   * server otherwise — src/lib/security/client-ip.ts).
+   */
+  clientIp?: string | null;
   /** Next.js fetch cache directives, for Server Component reads. */
   cache?: RequestCache;
   next?: { revalidate?: number | false; tags?: string[] };
@@ -56,10 +62,15 @@ export async function callUpstream(request: UpstreamRequest): Promise<UpstreamRe
     else request.signal.addEventListener("abort", () => controller.abort(), { once: true });
   }
 
+  const headers = new Headers(request.headers);
+  for (const [name, value] of Object.entries(forwardedClientHeaders(request.clientIp))) {
+    headers.set(name, value);
+  }
+
   try {
     const response = await fetch(buildUrl(request.path, request.search), {
       method: request.method ?? "GET",
-      headers: request.headers,
+      headers,
       body: request.body ?? null,
       signal: controller.signal,
       redirect: "manual",

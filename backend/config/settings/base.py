@@ -301,6 +301,16 @@ AUTOMATION_MAX_DEPTH = env.int("AUTOMATION_MAX_DEPTH", default=5)
 # tests must never call a real external endpoint, phase section 90).
 AUTOMATION_WEBHOOK_SENDER_BACKEND = env("AUTOMATION_WEBHOOK_SENDER_BACKEND", default="http")
 
+# --- Client identity (core/client_ip.py) ---------------------------------------
+# Reverse proxies in front of Django that append to X-Forwarded-For: 1 in AWS
+# (the ALB — infrastructure/terraform/ecs.tf), 0 locally where nothing is.
+# Never more than actually exist: an extra trusted hop lets a client choose its
+# own address.
+TRUSTED_PROXY_COUNT = env.int("TRUSTED_PROXY_COUNT", default=0)
+# Shared with the Next.js BFF, which forwards the browser's address with it.
+# Empty = no forwarded address is trusted (every BFF call is one client).
+BFF_PROXY_SECRET = env("BFF_PROXY_SECRET", default="")
+
 # --- Django REST Framework ---------------------------------------------------
 
 REST_FRAMEWORK = {
@@ -341,6 +351,9 @@ REST_FRAMEWORK = {
         "anon": env("THROTTLE_ANON", default="60/min"),
     },
     "TEST_REQUEST_DEFAULT_FORMAT": "json",
+    # Kept consistent with core/client_ip.py for anything still using DRF's own
+    # get_ident; unset, DRF keys on the entire client-written header.
+    "NUM_PROXIES": TRUSTED_PROXY_COUNT,
 }
 
 SIMPLE_JWT = {

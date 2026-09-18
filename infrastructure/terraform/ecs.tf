@@ -69,6 +69,9 @@ resource "aws_ecs_task_definition" "service" {
         # workers run batch statements (recurring generation, retention
         # purges) that may legitimately take longer, but never unbounded.
         { name = "DB_STATEMENT_TIMEOUT_MS", value = each.value.is_load_balanced ? "30000" : "300000" },
+        # One trusted hop: the ALB appends the connecting address to
+        # X-Forwarded-For (backend/core/client_ip.py).
+        { name = "TRUSTED_PROXY_COUNT", value = "1" },
         { name = "DOCUMENT_STORAGE_BACKEND", value = "s3" },
         { name = "DOCUMENT_STORAGE_S3_BUCKET", value = aws_s3_bucket.documents.bucket },
         { name = "DOCUMENT_STORAGE_S3_REGION", value = var.aws_region },
@@ -82,6 +85,7 @@ resource "aws_ecs_task_definition" "service" {
 
       secrets = [
         { name = "DJANGO_SECRET_KEY", valueFrom = aws_secretsmanager_secret.django_secret_key.arn },
+        { name = "BFF_PROXY_SECRET", valueFrom = aws_secretsmanager_secret.bff_proxy_secret.arn },
         { name = "DB_USER", valueFrom = "${aws_secretsmanager_secret.app_db_credentials.arn}:username::" },
         { name = "DB_PASSWORD", valueFrom = "${aws_secretsmanager_secret.app_db_credentials.arn}:password::" },
       ]

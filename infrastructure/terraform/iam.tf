@@ -34,6 +34,7 @@ data "aws_iam_policy_document" "ecs_execution_secrets" {
     resources = concat(
       [
         aws_secretsmanager_secret.django_secret_key.arn,
+        aws_secretsmanager_secret.bff_proxy_secret.arn,
         aws_secretsmanager_secret.app_db_credentials.arn,
         aws_db_instance.main.master_user_secret[0].secret_arn,
       ],

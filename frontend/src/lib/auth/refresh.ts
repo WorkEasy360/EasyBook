@@ -27,12 +27,13 @@ interface RefreshResponse {
   refresh?: unknown;
 }
 
-async function performRefresh(refreshToken: string): Promise<SessionTokens | null> {
+async function performRefresh(refreshToken: string, clientIp: string | null): Promise<SessionTokens | null> {
   const response = await callUpstream({
     path: "/auth/refresh/",
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ refresh: refreshToken }),
+    clientIp,
   });
 
   if (response.status !== 200) return null;
@@ -54,11 +55,11 @@ async function performRefresh(refreshToken: string): Promise<SessionTokens | nul
  * Returns null when the refresh token is expired, blacklisted or invalid —
  * the caller should then clear the session and send the user to sign in.
  */
-export function refreshTokens(refreshToken: string): Promise<SessionTokens | null> {
+export function refreshTokens(refreshToken: string, clientIp: string | null = null): Promise<SessionTokens | null> {
   const existing = inFlight.get(refreshToken);
   if (existing) return existing;
 
-  const promise = performRefresh(refreshToken).finally(() => {
+  const promise = performRefresh(refreshToken, clientIp).finally(() => {
     inFlight.delete(refreshToken);
   });
   inFlight.set(refreshToken, promise);

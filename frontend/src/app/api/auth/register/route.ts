@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { callUpstream } from "@/lib/api/upstream";
+import { clientIpFromHeaders } from "@/lib/security/client-ip";
 import { errorEnvelope, refuseForeignOrigin, relayUpstreamError, signInWithPassword } from "@/lib/auth/sign-in";
 
 /**
@@ -27,8 +28,10 @@ export async function POST(request: Request): Promise<NextResponse> {
     return errorEnvelope("invalid", "Enter your email address and a password.", 400);
   }
 
+  const clientIp = clientIpFromHeaders(request.headers);
   const upstream = await callUpstream({
     path: "/auth/register/",
+    clientIp,
     method: "POST",
     headers: { "Content-Type": "application/json", Accept: "application/json" },
     body: JSON.stringify({
@@ -47,7 +50,7 @@ export async function POST(request: Request): Promise<NextResponse> {
     return relayUpstreamError(upstream);
   }
 
-  const session = await signInWithPassword(email, password);
+  const session = await signInWithPassword(email, password, clientIp);
   if (session.ok) return session;
 
   // The account exists even though the automatic sign-in did not complete

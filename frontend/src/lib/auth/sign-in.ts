@@ -48,7 +48,11 @@ export function relayUpstreamError(upstream: UpstreamResponse): NextResponse {
   );
 }
 
-export async function signInWithPassword(email: string, password: string): Promise<NextResponse> {
+export async function signInWithPassword(
+  email: string,
+  password: string,
+  clientIp: string | null = null,
+): Promise<NextResponse> {
   // USERNAME_FIELD is "email" (backend/accounts/models.py), so SimpleJWT's
   // serializer expects `email`, not `username`.
   const upstream = await callUpstream({
@@ -56,6 +60,9 @@ export async function signInWithPassword(email: string, password: string): Promi
     method: "POST",
     headers: { "Content-Type": "application/json", Accept: "application/json" },
     body: JSON.stringify({ email, password }),
+    // Sign-in is throttled per client; without this every browser user shares
+    // this server's own bucket (backend/core/client_ip.py).
+    clientIp,
   });
 
   if (upstream.status !== 200) {
@@ -85,6 +92,7 @@ export async function signInWithPassword(email: string, password: string): Promi
   const orgResponse = await callUpstream({
     path: "/organizations/",
     headers: { Authorization: `Bearer ${tokens.access}`, Accept: "application/json" },
+    clientIp,
     cache: "no-store",
   });
   const organizations =

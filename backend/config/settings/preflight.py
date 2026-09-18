@@ -19,6 +19,8 @@ def validate_production_settings(
     cors_allowed_origins_raw,
     cors_allowed_origins,
     document_storage_backend,
+    trusted_proxy_count,
+    bff_proxy_secret,
 ):
     """Raise RuntimeError on the first insecure/missing value found.
 
@@ -42,6 +44,18 @@ def validate_production_settings(
         raise RuntimeError("CORS_ALLOWED_ORIGINS must be set explicitly in production.")
     if "*" in cors_allowed_origins:
         raise RuntimeError("CORS_ALLOWED_ORIGINS must not contain a wildcard in production.")
+
+    if trusted_proxy_count < 1:
+        raise RuntimeError(
+            "TRUSTED_PROXY_COUNT must be at least 1 in production (the load balancer) — with 0 every "
+            "client is attributed to the load balancer's address and shares one rate limit."
+        )
+
+    if not bff_proxy_secret or len(bff_proxy_secret) < 32:
+        raise RuntimeError(
+            "BFF_PROXY_SECRET must be set (32+ characters) in production — without it every browser user "
+            "is attributed to the frontend server's address and shares one rate limit."
+        )
 
     if document_storage_backend != "s3":
         raise RuntimeError(

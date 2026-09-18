@@ -1,4 +1,5 @@
 import type { NextResponse } from "next/server";
+import { clientIpFromHeaders } from "@/lib/security/client-ip";
 import { errorEnvelope, refuseForeignOrigin, signInWithPassword } from "@/lib/auth/sign-in";
 
 /** Exchanges credentials for a cookie session (src/lib/auth/sign-in.ts). */
@@ -20,7 +21,7 @@ export async function POST(request: Request): Promise<NextResponse> {
     return errorEnvelope("invalid", "Enter your email address and password.", 400);
   }
 
-  return signInWithPassword(email, password);
+  return signInWithPassword(email, password, clientIpFromHeaders(request.headers));
 }
 
 export const dynamic = "force-dynamic";

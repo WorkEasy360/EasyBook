@@ -27,6 +27,28 @@ resource "aws_secretsmanager_secret_version" "django_secret_key" {
   }
 }
 
+# Shared by the Next.js BFF and the API: the BFF forwards the browser's address
+# for rate limiting, and the API trusts that address only alongside this secret
+# (backend/core/client_ip.py). The frontend deployment must read this same
+# secret as BFF_PROXY_SECRET (frontend/.env.example).
+resource "random_password" "bff_proxy_secret" {
+  length  = 64
+  special = false
+}
+
+resource "aws_secretsmanager_secret" "bff_proxy_secret" {
+  name = "${local.name}/bff-proxy-secret"
+}
+
+resource "aws_secretsmanager_secret_version" "bff_proxy_secret" {
+  secret_id     = aws_secretsmanager_secret.bff_proxy_secret.id
+  secret_string = random_password.bff_proxy_secret.result
+
+  lifecycle {
+    ignore_changes = [secret_string]
+  }
+}
+
 # The application's own non-superuser DB role (easybook_app locally — see
 # infrastructure/postgres-init/01-app-role.sql). RDS's master credential
 # (below, AWS-managed) must never be the runtime app user — global rule 4/

@@ -17,10 +17,18 @@ import logging
 from redis.exceptions import RedisError
 from rest_framework.throttling import AnonRateThrottle, ScopedRateThrottle, UserRateThrottle
 
+from core.client_ip import get_client_ip
+
 logger = logging.getLogger("django.request")
 
 
 class FailOpenThrottleMixin:
+    def get_ident(self, request):
+        # core/client_ip.py, not DRF's default: with NUM_PROXIES unset DRF keys
+        # on the whole client-written X-Forwarded-For header, and behind the BFF
+        # every browser user shares the BFF's own address.
+        return get_client_ip(request) or super().get_ident(request)
+
     def allow_request(self, request, view):
         try:
             return super().allow_request(request, view)

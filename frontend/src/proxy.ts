@@ -3,6 +3,7 @@ import { isNetworkError } from "@/lib/api/errors";
 import { isExpiringSoon } from "@/lib/auth/jwt";
 import { refreshTokens } from "@/lib/auth/refresh";
 import { ACCESS_COOKIE, ORG_COOKIE, REFRESH_COOKIE, cookieSecurity } from "@/lib/auth/session";
+import { clientIpFromHeaders } from "@/lib/security/client-ip";
 import { buildContentSecurityPolicy, generateNonce } from "@/lib/security/csp";
 
 /**
@@ -83,7 +84,7 @@ export async function proxy(request: NextRequest) {
   if (access && refresh && isExpiringSoon(access)) {
     let rotated: Awaited<ReturnType<typeof refreshTokens>>;
     try {
-      rotated = await refreshTokens(refresh);
+      rotated = await refreshTokens(refresh, clientIpFromHeaders(request.headers));
     } catch (error) {
       // Backend unreachable or timed out: that says nothing about the session.
       // Clearing cookies would sign everyone out during an outage, and letting

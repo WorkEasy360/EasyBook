@@ -9,6 +9,7 @@ import {
   REFRESH_COOKIE,
   cookieSecurity,
 } from "@/lib/auth/session";
+import { clientIpFromHeaders } from "@/lib/security/client-ip";
 import {
   BodyTooLargeError,
   DEFAULT_MAX_BODY_BYTES,
@@ -166,11 +167,15 @@ async function proxy(
     return unauthorized("Your session has expired. Please sign in again.");
   }
 
+  // Django is reached server-to-server, so without this every browser user
+  // counts as one client against its rate limits.
+  const clientIp = clientIpFromHeaders(request.headers);
+
   // No organization cookie (the sign-in lookup failed, or it was cleared):
   // resolve the first organization the user belongs to — the same fallback
   // requireSession() uses for the page — and persist it on this response, so
   // the browser and the rendered page agree on the tenant.
-  const organizationId = storedOrganizationId ?? (await firstOrganizationId(accessToken));
+  const organizationId = storedOrganizationId ?? (await firstOrganizationId(accessToken, clientIp));
 
   const search = new URL(request.url).searchParams.toString();
   const method = request.method.toUpperCase();
@@ -199,6 +204,7 @@ async function proxy(
     body,
     headers: buildUpstreamHeaders(request, accessToken, organizationId),
     timeoutMs,
+    clientIp,
     cache: "no-store",
   });
 
@@ -209,7 +215,7 @@ async function proxy(
   }
 
   // 401: the access token expired mid-session. Refresh once and replay.
-  const rotated = await refreshTokens(refreshToken);
+  const rotated = await refreshTokens(refreshToken, clientIp);
   if (!rotated) {
     const response = unauthorized("Your session has expired. Please sign in again.");
     const base = cookieSecurity();
@@ -225,6 +231,7 @@ async function proxy(
     body,
     headers: buildUpstreamHeaders(request, rotated.access, organizationId),
     timeoutMs,
+    clientIp,
     cache: "no-store",
   });
 
@@ -237,10 +244,11 @@ async function proxy(
   return response;
 }
 
-async function firstOrganizationId(accessToken: string): Promise<string | null> {
+async function firstOrganizationId(accessToken: string, clientIp: string | null): Promise<string | null> {
   const response = await callUpstream({
     path: "/organizations/",
     headers: { Authorization: `Bearer ${accessToken}`, Accept: "application/json" },
+    clientIp,
     cache: "no-store",
   });
   if (response.status !== 200) return null;

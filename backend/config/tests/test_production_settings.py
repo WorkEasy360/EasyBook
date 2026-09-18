@@ -26,6 +26,8 @@ VALID_KWARGS = {
     "cors_allowed_origins_raw": "https://app.example.com",
     "cors_allowed_origins": ["https://app.example.com"],
     "document_storage_backend": "s3",
+    "trusted_proxy_count": 1,
+    "bff_proxy_secret": "b" * 48,
 }
 
 
@@ -68,6 +70,18 @@ class ValidateProductionSettingsTests(SimpleTestCase):
         with self.assertRaisesMessage(RuntimeError, "CORS_ALLOWED_ORIGINS"):
             validate_production_settings(**kwargs)
 
+    def test_no_trusted_proxy_rejected(self):
+        kwargs = {**VALID_KWARGS, "trusted_proxy_count": 0}
+        with self.assertRaisesMessage(RuntimeError, "TRUSTED_PROXY_COUNT"):
+            validate_production_settings(**kwargs)
+
+    def test_missing_or_short_bff_proxy_secret_rejected(self):
+        for secret in ("", "too-short"):
+            with self.subTest(secret=secret):
+                kwargs = {**VALID_KWARGS, "bff_proxy_secret": secret}
+                with self.assertRaisesMessage(RuntimeError, "BFF_PROXY_SECRET"):
+                    validate_production_settings(**kwargs)
+
     def test_non_s3_document_storage_rejected(self):
         kwargs = {**VALID_KWARGS, "document_storage_backend": "local"}
         with self.assertRaisesMessage(RuntimeError, "DOCUMENT_STORAGE_BACKEND"):
@@ -86,6 +100,8 @@ def _run_check(overrides=None):
         "CORS_ALLOWED_ORIGINS": "https://app.example.com",
         "CSRF_TRUSTED_ORIGINS": "https://app.example.com",
         "DOCUMENT_STORAGE_BACKEND": "s3",
+        "TRUSTED_PROXY_COUNT": "1",
+        "BFF_PROXY_SECRET": "b" * 48,
         **(overrides or {}),
     }
     return subprocess.run(

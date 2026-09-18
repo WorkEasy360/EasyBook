@@ -43,4 +43,6 @@ validate_production_settings(
     cors_allowed_origins_raw=env("CORS_ALLOWED_ORIGINS", default=None),
     cors_allowed_origins=CORS_ALLOWED_ORIGINS,
     document_storage_backend=DOCUMENT_STORAGE_BACKEND,
+    trusted_proxy_count=TRUSTED_PROXY_COUNT,
+    bff_proxy_secret=BFF_PROXY_SECRET,
 )
