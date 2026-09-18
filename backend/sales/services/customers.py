@@ -1,5 +1,6 @@
 from django.db import transaction
 
+from accounting.services.currency import assert_base_currency
 from accounts.models import Currency
 from audit.models import AuditLog
 from audit.services import record as record_audit
@@ -59,6 +60,7 @@ def create_customer(
     actor=None,
 ) -> Customer:
     _validate_currency(currency=currency)
+    assert_base_currency(organization=organization, currency=currency)
     if credit_limit is not None and credit_limit < 0:
         raise ApplicationError("credit_limit cannot be negative.", code="credit_limit_invalid")
     _assert_customer_code_unused(organization=organization, customer_code=customer_code)
@@ -99,6 +101,7 @@ def create_customer(
 def update_customer(*, customer: Customer, actor=None, **fields) -> Customer:
     if "currency" in fields:
         _validate_currency(currency=fields["currency"])
+        assert_base_currency(organization=customer.organization, currency=fields["currency"])
     if "credit_limit" in fields and fields["credit_limit"] is not None and fields["credit_limit"] < 0:
         raise ApplicationError("credit_limit cannot be negative.", code="credit_limit_invalid")
     if "customer_code" in fields and fields["customer_code"] != customer.customer_code:

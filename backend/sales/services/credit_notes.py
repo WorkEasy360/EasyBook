@@ -5,6 +5,7 @@ from django.db import transaction
 from django.utils import timezone
 
 from accounting.models.account import AccountType
+from accounting.services.currency import assert_base_currency
 from accounting.services.posting import reverse_journal
 from accounts.services import allocate_sequence_number
 from audit.models import AuditLog
@@ -139,6 +140,7 @@ def create_credit_note(
         raise ApplicationError("A credit note needs at least one line.", code="credit_note_no_lines")
 
     currency = currency or (source_invoice.currency if source_invoice else customer.currency)
+    assert_base_currency(organization=organization, currency=currency, exchange_rate=exchange_rate)
 
     # A credit note against an invoice inherits that invoice's GST treatment
     # rather than re-determining it. Crediting a supply under a different

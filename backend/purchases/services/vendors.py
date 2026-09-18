@@ -1,5 +1,6 @@
 from django.db import transaction
 
+from accounting.services.currency import assert_base_currency
 from accounts.models import Currency
 from audit.models import AuditLog
 from audit.services import record as record_audit
@@ -72,6 +73,7 @@ def create_vendor(
     actor=None,
 ) -> Vendor:
     _validate_currency(currency=currency)
+    assert_base_currency(organization=organization, currency=currency)
     _validate_default_payable_account(organization=organization, account=default_payable_account)
     _assert_vendor_code_unused(organization=organization, vendor_code=vendor_code)
 
@@ -111,6 +113,7 @@ def create_vendor(
 def update_vendor(*, vendor: Vendor, actor=None, **fields) -> Vendor:
     if "currency" in fields:
         _validate_currency(currency=fields["currency"])
+        assert_base_currency(organization=vendor.organization, currency=fields["currency"])
     if "default_payable_account" in fields:
         _validate_default_payable_account(
             organization=vendor.organization, account=fields["default_payable_account"]

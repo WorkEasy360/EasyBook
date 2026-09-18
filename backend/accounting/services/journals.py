@@ -4,6 +4,7 @@ from django.db import transaction
 
 from accounting.models.account import Account
 from accounting.models.journal import JournalEntry, JournalLine, JournalStatus
+from accounting.services.currency import assert_base_currency
 from core.exceptions import ApplicationError
 
 
@@ -38,6 +39,7 @@ def create_draft_journal(
     debit == credit here — that invariant is enforced at posting time
     (accounting.services.posting.post_journal), so a draft can be a
     work-in-progress. See accounting/CLAUDE.md."""
+    assert_base_currency(organization=organization, currency=currency, exchange_rate=exchange_rate)
     if len(lines) < 2:
         raise ApplicationError("A journal entry needs at least two lines.", code="journal_too_few_lines")
 

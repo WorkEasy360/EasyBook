@@ -15,6 +15,7 @@ OWNS
 
 INVARIANTS
 - Decimal only, never float.
+- Single currency only, until real multi-currency accounting exists: `services/currency.py::assert_base_currency` refuses any transaction whose currency is not the organization's `default_currency` or whose `exchange_rate` is not 1. Enforced at the ledger (`create_draft_journal`, and again in `post_journal` so a pre-guard draft cannot slip through) and in every document/party service. Posting never carried a document's exchange rate into its journal, so a USD 1,000 invoice posted 1,000 in base currency — see `tests/test_foreign_currency.py`.
 - `debit == credit` enforced at POST time (`services/posting.post_journal`), not at draft creation — drafts may be unbalanced work-in-progress.
 - No mutable authoritative balance field anywhere (no `account.balance`). General Ledger/Trial Balance are always derived from posted `JournalLine` rows — see `selectors.py` docstring for why there is deliberately no separate ledger projection table.
 - Posted journals/lines are immutable: `JournalEntry.save()`/`delete()` and `JournalLine.save()`/`delete()` raise `ValueError` outside the allowed DRAFT→POSTED/POSTED→REVERSED transitions. Corrections go through `reverse_journal()`, never direct edits.

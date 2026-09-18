@@ -4,6 +4,7 @@ import logging
 from django.db import IntegrityError, transaction
 from django.utils import timezone
 
+from accounting.services.currency import assert_base_currency
 from audit.models import AuditLog
 from audit.services import record as record_audit
 from core.exceptions import ApplicationError
@@ -93,6 +94,7 @@ def create_recurring_template(
         raise ApplicationError("A recurring invoice template needs at least one line.", code="recurring_no_lines")
 
     currency = currency or customer.currency
+    assert_base_currency(organization=organization, currency=currency, exchange_rate=exchange_rate)
     validated_lines = [_validate_line(organization=organization, line=line) for line in lines]
     _assert_warehouse_for_stock_lines(lines=validated_lines, warehouse=warehouse)
 
@@ -141,6 +143,9 @@ def update_recurring_template(*, template: RecurringInvoiceTemplate, lines: list
     # The same rule create enforces; the update path skipped it and saved an
     # end date before the start date.
     end_date = fields.get("end_date", template.end_date)
+    assert_base_currency(
+        organization=template.organization, currency=fields.get("currency"), exchange_rate=fields.get("exchange_rate")
+    )
     if end_date is not None and end_date < template.start_date:
         raise ApplicationError("end_date cannot be before start_date.", code="recurring_end_before_start")
 

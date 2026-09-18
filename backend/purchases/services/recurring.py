@@ -18,6 +18,7 @@ import datetime
 from django.db import IntegrityError, transaction
 from django.utils import timezone
 
+from accounting.services.currency import assert_base_currency
 from audit.models import AuditLog
 from audit.services import record as record_audit
 from core.enums import RecurringFrequency
@@ -107,6 +108,7 @@ def create_recurring_bill_template(
         raise ApplicationError("A recurring bill template needs at least one line.", code="recurring_no_lines")
 
     currency = currency or vendor.currency
+    assert_base_currency(organization=organization, currency=currency, exchange_rate=exchange_rate)
     validated_lines = [_validate_template_line(organization=organization, line=line) for line in lines]
 
     tax_treatment = resolve_document_tax(
@@ -152,6 +154,9 @@ def update_recurring_bill_template(
     *, template: RecurringBillTemplate, lines: list[dict] | None = None, actor=None, **fields
 ) -> RecurringBillTemplate:
     changes = {}
+    assert_base_currency(
+        organization=template.organization, currency=fields.get("currency"), exchange_rate=fields.get("exchange_rate")
+    )
     for field, value in fields.items():
         if getattr(template, field) == value:
             continue
@@ -301,6 +306,7 @@ def create_recurring_expense_template(
 
     if currency is None:
         currency = vendor.currency if vendor is not None else organization.default_currency
+    assert_base_currency(organization=organization, currency=currency, exchange_rate=exchange_rate)
 
     tax_treatment = resolve_document_tax(
         organization=organization, party=vendor, place_of_supply=place_of_supply
@@ -343,6 +349,9 @@ def update_recurring_expense_template(
     *, template: RecurringExpenseTemplate, actor=None, **fields
 ) -> RecurringExpenseTemplate:
     changes = {}
+    assert_base_currency(
+        organization=template.organization, currency=fields.get("currency"), exchange_rate=fields.get("exchange_rate")
+    )
     for field, value in fields.items():
         if getattr(template, field) == value:
             continue

@@ -5,6 +5,7 @@ from decimal import Decimal
 from django.db import transaction
 
 from accounting.models.account import AccountType
+from accounting.services.currency import assert_base_currency
 from accounts.services import allocate_sequence_number
 from audit.models import AuditLog
 from audit.services import record as record_audit
@@ -69,6 +70,7 @@ def record_vendor_payment(
         raise ApplicationError("Payment amount must be positive.", code="payment_amount_invalid")
 
     currency = currency or vendor.currency
+    assert_base_currency(organization=organization, currency=currency)
 
     locked_bills = {}
     allocated_total = Decimal("0")

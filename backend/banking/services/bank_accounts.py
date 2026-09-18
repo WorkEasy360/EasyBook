@@ -5,6 +5,7 @@ import re
 from django.db import transaction
 
 from accounting.models.account import AccountType
+from accounting.services.currency import assert_base_currency
 from audit.models import AuditLog
 from audit.services import record as record_audit
 from banking.models.bank_account import BankAccount, BankAccountKind
@@ -65,6 +66,7 @@ def create_bank_account(
     notes: str = "",
     actor=None,
 ) -> BankAccount:
+    assert_base_currency(organization=organization, currency=currency)
     if account.organization_id != organization.id:
         raise ApplicationError(
             "The ledger account must belong to this organization.", code="cross_org_reference"

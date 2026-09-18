@@ -21,6 +21,7 @@ from django.db import transaction
 from django.utils import timezone
 
 from accounting.models.account import AccountType
+from accounting.services.currency import assert_base_currency
 from accounting.services.posting import reverse_journal
 from accounts.services import allocate_sequence_number
 from audit.models import AuditLog
@@ -181,6 +182,7 @@ def create_vendor_credit(
         raise ApplicationError("A vendor credit needs at least one line.", code="vendor_credit_no_lines")
 
     currency = currency or (source_bill.currency if source_bill else vendor.currency)
+    assert_base_currency(organization=organization, currency=currency, exchange_rate=exchange_rate)
     # A credit against a bill inherits that bill's treatment - crediting under
     # a different one would leave the two unable to net in the return.
     if tax_treatment is None:

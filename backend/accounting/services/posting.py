@@ -4,6 +4,7 @@ from django.db import transaction
 from django.utils import timezone
 
 from accounting.models.journal import JournalEntry, JournalLine, JournalStatus
+from accounting.services.currency import assert_base_currency
 from accounting.services.fiscal import assert_period_open, get_fiscal_year_for_date
 from accounts.services import allocate_sequence_number
 from audit.models import AuditLog
@@ -39,6 +40,9 @@ def post_journal(*, journal_id, organization, actor=None) -> JournalEntry:
         raise ApplicationError(
             f"Cannot post a journal entry in status '{journal.status}'.", code="journal_invalid_status"
         )
+    # Re-checked at posting, not only at draft creation: a draft that predates
+    # the guard, or was written some other way, must never reach the ledger.
+    assert_base_currency(organization=organization, currency=journal.currency_id, exchange_rate=journal.exchange_rate)
 
     lines = list(
         JournalLine.objects.select_for_update().select_related("account").filter(journal_entry=journal)
