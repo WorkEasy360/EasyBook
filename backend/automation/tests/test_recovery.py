@@ -87,7 +87,7 @@ class ExecutionRecoveryTests(TestCase):
     def test_recovery_gives_up_visibly_once_the_attempt_budget_is_spent(self):
         with tenant_context(organization_id=self.org.id):
             execution = create_manual_execution(rule=self.rule, actor=self.owner)
-            AutomationExecution.all_objects.filter(pk=execution.pk).update(attempt_count=RECOVERY_MAX_ATTEMPTS)
+            AutomationExecution.all_objects.filter(pk=execution.pk).update(recovery_attempts=RECOVERY_MAX_ATTEMPTS)
         self._age(execution, minutes=30)
 
         result = self._sweep()

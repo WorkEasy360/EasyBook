@@ -69,6 +69,12 @@ class AutomationExecution(TenantScopedModel):
     started_at = models.DateTimeField(null=True, blank=True)
     finished_at = models.DateTimeField(null=True, blank=True)
     attempt_count = models.PositiveIntegerField(default=0)
+    # Incremented by the recovery sweeper (automation/tasks.py) in its OWN
+    # transaction. attempt_count cannot serve as the sweeper's budget: it is
+    # written inside the run's transaction, so a run that fails by rolling back
+    # (statement timeout, lost connection, a bug) undoes it, and the sweeper
+    # would re-enqueue the same execution forever.
+    recovery_attempts = models.PositiveIntegerField(default=0)
     error_summary = models.TextField(blank=True)
 
     class Meta:

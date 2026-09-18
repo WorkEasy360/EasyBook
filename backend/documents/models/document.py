@@ -85,6 +85,11 @@ class Document(TenantScopedModel):
     document_type = models.CharField(max_length=20, choices=DocumentType.choices, default=DocumentType.GENERAL)
     upload_status = models.CharField(max_length=20, choices=UploadStatus.choices, default=UploadStatus.UPLOADING)
     ocr_status = models.CharField(max_length=20, choices=OCRStatus.choices, default=OCRStatus.NOT_REQUESTED)
+    # Spent by the recovery sweeper (documents/tasks.py) when it re-enqueues a
+    # document stuck QUEUED, and reset whenever OCR is requested afresh. Without
+    # a budget the sweeper re-enqueues forever, re-fetching the file and
+    # re-invoking the (paid) OCR provider every cycle.
+    ocr_recovery_attempts = models.PositiveIntegerField(default=0)
 
     folder = models.ForeignKey(
         "documents.DocumentFolder", null=True, blank=True, on_delete=models.SET_NULL, related_name="documents"

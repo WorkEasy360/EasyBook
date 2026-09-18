@@ -9,6 +9,7 @@ from decimal import Decimal
 
 from django.conf import settings
 from django.db import transaction
+from django.db.models import F
 from django.utils import timezone
 
 from audit.models import AuditLog
@@ -37,6 +38,8 @@ def request_ocr(*, document: Document, actor=None) -> Document:
         if document.ocr_status in _ALREADY_REQUESTED:
             return document
         transition_ocr_status(document, OCRStatus.QUEUED)
+        # A fresh request gets a fresh recovery budget.
+        Document.objects.filter(pk=document.pk).update(ocr_recovery_attempts=0)
 
     record_audit(
         organization_id=document.organization_id, actor=actor, action=AuditLog.Action.UPDATE,
@@ -115,7 +118,30 @@ def process_ocr(*, document_id) -> None:
     )
 
 
-def recover_stalled_ocr(*, queued_before, processing_before, batch_size: int = 200) -> dict:
+def _fail_ocr(document, *, error_code: str, error_message: str) -> None:
+    OCRResult.objects.update_or_create(
+        document=document,
+        defaults={
+            "organization": document.organization,
+            "provider": "none",
+            "provider_version": "",
+            "raw_text": "",
+            "structured_payload": {},
+            "confidence": None,
+            "error_code": error_code,
+            "error_message": error_message,
+            "processed_at": timezone.now(),
+        },
+    )
+    transition_ocr_status(document, OCRStatus.FAILED)
+    record_audit(
+        organization_id=document.organization_id, action=AuditLog.Action.UPDATE,
+        object_type="documents.Document", object_id=document.id,
+        changes={"ocr_status": OCRStatus.FAILED, "reason": error_code},
+    )
+
+
+def recover_stalled_ocr(*, queued_before, processing_before, max_attempts: int, batch_size: int = 200) -> dict:
     """Recovery sweeper body (documents/tasks.py::recover_stalled_ocr_task),
     run inside the caller's tenant_context.
 
@@ -135,9 +161,22 @@ def recover_stalled_ocr(*, queued_before, processing_before, batch_size: int = 2
         .order_by("updated_at")[:batch_size]
     )
     for document in stalled_queued:
-        # Touching updated_at keeps the next sweep from re-enqueuing it again
-        # while this message is still on its way to a worker.
-        document.save(update_fields=["updated_at"])
+        if document.ocr_recovery_attempts >= max_attempts:
+            # Give up visibly rather than re-fetching and re-extracting forever.
+            # FAILED is also the one state request_ocr accepts a fresh request from.
+            _fail_ocr(
+                document,
+                error_code="ocr_recovery_exhausted",
+                error_message="Text extraction could not be started after repeated attempts. Request OCR again.",
+            )
+            failed += 1
+            continue
+        # Spend one unit of budget and touch updated_at, both committed with
+        # this sweep: the timestamp keeps the next sweep from re-enqueuing a
+        # message still on its way to a worker.
+        Document.objects.filter(pk=document.pk).update(
+            ocr_recovery_attempts=F("ocr_recovery_attempts") + 1, updated_at=timezone.now()
+        )
         transaction.on_commit(
             lambda document_id=str(document.id), organization_id=str(document.organization_id): run_ocr_task.delay(
                 document_id, organization_id
@@ -151,25 +190,10 @@ def recover_stalled_ocr(*, queued_before, processing_before, batch_size: int = 2
         .order_by("updated_at")[:batch_size]
     )
     for document in stalled_processing:
-        OCRResult.objects.update_or_create(
-            document=document,
-            defaults={
-                "organization": document.organization,
-                "provider": "none",
-                "provider_version": "",
-                "raw_text": "",
-                "structured_payload": {},
-                "confidence": None,
-                "error_code": "ocr_worker_lost",
-                "error_message": "Text extraction did not finish. Request OCR again.",
-                "processed_at": timezone.now(),
-            },
-        )
-        transition_ocr_status(document, OCRStatus.FAILED)
-        record_audit(
-            organization_id=document.organization_id, action=AuditLog.Action.UPDATE,
-            object_type="documents.Document", object_id=document.id,
-            changes={"ocr_status": OCRStatus.FAILED, "reason": "ocr_worker_lost"},
+        _fail_ocr(
+            document,
+            error_code="ocr_worker_lost",
+            error_message="Text extraction did not finish. Request OCR again.",
         )
         failed += 1
     return {"requeued": requeued, "failed": failed}
