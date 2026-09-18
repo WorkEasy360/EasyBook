@@ -1,7 +1,8 @@
 name: Infrastructure CI
 
-# Static checks only: `terraform fmt -check` and `terraform validate`, both of
-# which run without AWS credentials (infrastructure/terraform/README.md).
+# Static checks and mocked-provider plan tests only: `terraform fmt -check`,
+# `terraform validate` and `terraform test`, all of which run without AWS
+# credentials (infrastructure/terraform/README.md).
 # plan/apply need real credentials and explicit human approval and are never
 # run from here.
 #
@@ -47,3 +48,9 @@ jobs:
 
       - name: Validate
         run: terraform validate
+
+      # tests/*.tftest.hcl plan the stack against a mocked AWS provider
+      # (tests/mocks) — no credentials — and assert the regressions that must
+      # never come back: health checks, deployment rollback, WAF handling.
+      - name: Plan-level tests
+        run: terraform test

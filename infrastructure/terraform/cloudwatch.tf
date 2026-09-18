@@ -151,3 +151,101 @@ resource "aws_cloudwatch_metric_alarm" "ecs_service_cpu" {
     ServiceName = aws_ecs_service.service[each.key].name
   }
 }
+
+# Deployment circuit-breaker failures (ecs.tf). ECS rolls the service back on
+# its own; this makes sure a human hears that the release did not go out.
+# AWS recommends alerting on SERVICE_DEPLOYMENT_FAILED for exactly this.
+resource "aws_cloudwatch_event_rule" "ecs_deployment_failed" {
+  name        = "${local.name}-ecs-deployment-failed"
+  description = "An ECS service deployment failed and was rolled back by the circuit breaker."
+
+  event_pattern = jsonencode({
+    source        = ["aws.ecs"]
+    "detail-type" = ["ECS Deployment State Change"]
+    # Every service in this stack's cluster (ecs.tf names the cluster local.name).
+    resources = [{ wildcard = "arn:aws:ecs:${var.aws_region}:*:service/${local.name}/*" }]
+    detail = {
+      eventName = ["SERVICE_DEPLOYMENT_FAILED"]
+    }
+  })
+}
+
+resource "aws_cloudwatch_event_target" "ecs_deployment_failed_alert" {
+  rule      = aws_cloudwatch_event_rule.ecs_deployment_failed.name
+  target_id = "alerts-topic"
+  arn       = aws_sns_topic.alerts.arn
+}
+
+data "aws_iam_policy_document" "alerts_topic" {
+  statement {
+    sid       = "AllowEventBridgeDeploymentAlerts"
+    actions   = ["sns:Publish"]
+    resources = [aws_sns_topic.alerts.arn]
+
+    principals {
+      type        = "Service"
+      identifiers = ["events.amazonaws.com"]
+    }
+
+    condition {
+      test     = "ArnEquals"
+      variable = "aws:SourceArn"
+      values   = [aws_cloudwatch_event_rule.ecs_deployment_failed.arn]
+    }
+  }
+
+  # A topic policy replaces SNS's default one, so this stack's own CloudWatch
+  # alarms (every alarm above) are allowed explicitly — scoped to this account
+  # so another account's alarms cannot publish here.
+  statement {
+    sid       = "AllowThisAccountsCloudWatchAlarms"
+    actions   = ["sns:Publish"]
+    resources = [aws_sns_topic.alerts.arn]
+
+    principals {
+      type        = "Service"
+      identifiers = ["cloudwatch.amazonaws.com"]
+    }
+
+    condition {
+      test     = "StringEquals"
+      variable = "aws:SourceAccount"
+      values   = [data.aws_caller_identity.current.account_id]
+    }
+
+    condition {
+      test     = "ArnLike"
+      variable = "aws:SourceArn"
+      values   = ["arn:aws:cloudwatch:${var.aws_region}:${data.aws_caller_identity.current.account_id}:alarm:*"]
+    }
+  }
+}
+
+data "aws_caller_identity" "current" {}
+
+resource "aws_sns_topic_policy" "alerts" {
+  arn    = aws_sns_topic.alerts.arn
+  policy = data.aws_iam_policy_document.alerts_topic.json
+}
+
+# The ALB now probes liveness only (alb.tf), so dependency health is watched
+# here instead: no healthy API target at all is always page-worthy.
+resource "aws_cloudwatch_metric_alarm" "api_no_healthy_targets" {
+  alarm_name          = "${local.name}-api-no-healthy-targets"
+  comparison_operator = "LessThanThreshold"
+  evaluation_periods  = 2
+  period              = 60
+  namespace           = "AWS/ApplicationELB"
+  metric_name         = "HealthyHostCount"
+  statistic           = "Minimum"
+  threshold           = 1
+  treat_missing_data  = "breaching"
+  alarm_description   = "The API target group has had no healthy target for 2 consecutive minutes."
+  alarm_actions       = [aws_sns_topic.alerts.arn]
+  ok_actions          = [aws_sns_topic.alerts.arn]
+
+  dimensions = {
+    LoadBalancer = aws_lb.main.arn_suffix
+    TargetGroup  = aws_lb_target_group.api.arn_suffix
+  }
+}

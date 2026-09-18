@@ -115,6 +115,20 @@ resource "aws_ecs_service" "service" {
   deployment_maximum_percent         = each.key == "beat" ? 100 : 200
   deployment_minimum_healthy_percent = each.key == "beat" ? 0 : 100
 
+  # A deployment whose tasks never start or never pass health checks is
+  # stopped and rolled back to the last COMPLETED deployment, instead of
+  # replacing tasks forever. Failures are announced (cloudwatch.tf,
+  # ecs_deployment_failed) so a rollback is never silent.
+  deployment_circuit_breaker {
+    enable   = true
+    rollback = true
+  }
+
+  # ELB health-check failures during container startup (migrations are not
+  # run here, but Django import + gunicorn boot still take seconds) must not
+  # count against a new task or the circuit breaker.
+  health_check_grace_period_seconds = each.value.is_load_balanced ? 60 : null
+
   network_configuration {
     subnets          = aws_subnet.private[*].id
     security_groups  = [aws_security_group.ecs_tasks.id]

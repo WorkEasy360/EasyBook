@@ -1,6 +1,37 @@
 import uuid
 
+from django.http import JsonResponse
+
 from core.tenancy import clear_tenant_context
+
+LIVENESS_PATH = "/api/v1/health/live/"
+
+
+class LivenessProbeMiddleware:
+    """Answers the liveness probe before any other middleware runs.
+
+    Must be first in MIDDLEWARE. The ALB target-group health check sends the
+    task's private IP as Host and the ECS container healthCheck sends
+    127.0.0.1:8000, neither of which is in production's DJANGO_ALLOWED_HOSTS —
+    CommonMiddleware's host validation answered both with 400, so every API
+    task failed its health checks. Answering here also keeps the probe clear of
+    SECURE_SSL_REDIRECT (the probe is plain HTTP inside the VPC), the database
+    (ATOMIC_REQUESTS wraps views, not middleware), sessions, auth and
+    throttling: liveness means "this process can answer", nothing more.
+    Readiness (/api/v1/health/, database + cache) stays an ordinary view for
+    monitoring and alerts, never for replacing tasks.
+
+    Only GET/HEAD on the exact path, so nothing else can use it to skip host
+    validation.
+    """
+
+    def __init__(self, get_response):
+        self.get_response = get_response
+
+    def __call__(self, request):
+        if request.path == LIVENESS_PATH and request.method in ("GET", "HEAD"):
+            return JsonResponse({"status": "ok"})
+        return self.get_response(request)
 
 # View names that never touch tenant context and must stay independent of the
 # database even during an outage (core/views.py:LivenessCheckView) — skipped

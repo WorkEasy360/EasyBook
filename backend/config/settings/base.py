@@ -54,6 +54,10 @@ INSTALLED_APPS = [
 ]
 
 MIDDLEWARE = [
+    # First, before host validation (CommonMiddleware) and the HTTPS redirect
+    # (SecurityMiddleware): ALB and ECS probes carry neither the public Host
+    # nor X-Forwarded-Proto. See core/middleware.py.
+    "core.middleware.LivenessProbeMiddleware",
     "django.middleware.security.SecurityMiddleware",
     "corsheaders.middleware.CorsMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",

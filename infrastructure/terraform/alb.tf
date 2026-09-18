@@ -22,10 +22,14 @@ resource "aws_lb_target_group" "api" {
   target_type = "ip" # required for awsvpc-networked Fargate tasks
 
   health_check {
-    # The readiness endpoint (DB + cache), not liveness: a target that can't
-    # actually serve a request should stop receiving traffic even if the
-    # process itself is alive (core/views.py:HealthCheckView vs LivenessCheckView).
-    path                = "/api/v1/health/"
+    # Liveness, never readiness. Probing /api/v1/health/ (database + Redis)
+    # meant one Redis or database blip failed EVERY target at once — the ALB
+    # then had nothing healthy to route to and ECS replaced tasks that were
+    # fine, turning a brief dependency blip into a full outage. Dependency
+    # health is for monitoring and alerts (cloudwatch.tf), not for routing or
+    # replacement. core/middleware.py answers this path before host
+    # validation, since the ALB sends the task IP as Host.
+    path                = "/api/v1/health/live/"
     matcher             = "200"
     interval            = 30
     timeout             = 5

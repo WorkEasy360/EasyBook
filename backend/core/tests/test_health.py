@@ -29,7 +29,7 @@ class LivenessCheckTests(APITestCase):
     def test_liveness_check_reports_ok_without_touching_dependencies(self):
         response = self.client.get("/api/v1/health/live/")
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.data, {"status": "ok"})
+        self.assertEqual(response.json(), {"status": "ok"})
 
     def test_liveness_check_is_never_throttled(self):
         for _ in range(_REQUEST_COUNT_BEYOND_ANON_LIMIT):
