@@ -113,6 +113,13 @@ DATABASES = {
         # connections exist at once.
         "CONN_MAX_AGE": 0,
         "OPTIONS": {
+            # Fail fast when nothing is listening. libpq's default is no
+            # connect timeout at all, so a stopped Postgres (a dev machine
+            # whose containers are down, an RDS failover) makes every request
+            # hang forever with no error — the thread, and under ASGI the
+            # concurrency slot, is held until something else kills it. Bounded,
+            # a connect failure surfaces as OperationalError in seconds.
+            "connect_timeout": env.int("DB_CONNECT_TIMEOUT_SECONDS", default=10),
             # Server-side guards on every connection (psycopg passes libpq
             # `options`). A runaway statement is cancelled instead of holding its
             # connection and locks; a transaction left idle — a request stalled

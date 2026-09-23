@@ -7,7 +7,7 @@ import "server-only";
  */
 
 export function apiBaseUrl(): string {
-  const raw = process.env.API_BASE_URL ?? "http://127.0.0.1:8000/api/v1";
+  const raw = process.env.API_BASE_URL ?? "http://127.0.0.1:8001/api/v1";
   return raw.replace(/\/+$/, "");
 }
 

@@ -23,7 +23,7 @@ DOES NOT OWN
   invariants (non-root, no secrets baked in, pinned base image) when either changes.
 
 KNOWN LOCAL SETUP NOTES
-- Host ports are remapped from the Postgres/Redis defaults (5442 for Postgres, 6390 for Redis) because other local projects on this machine already bind 5432/6379. This is a local-machine accommodation, not a production port choice — production (RDS/ElastiCache) uses standard ports behind security groups.
+- Host ports are remapped from the Postgres/Redis defaults (5472 for Postgres, 6390 for Redis) because other local projects on this machine already bind 5432/6379. This is a local-machine accommodation, not a production port choice — production (RDS/ElastiCache) uses standard ports behind security groups.
 - The role created via `POSTGRES_USER` in the official Postgres image is ALWAYS a superuser, and superusers unconditionally bypass Row Level Security — `FORCE ROW LEVEL SECURITY` does not override this. `01-app-role.sql` creates a separate `easybook_app` role (not a superuser) that Django actually connects as. In production, the RDS master user must likewise never be the application's runtime DB user.
 - The init script only runs against an empty Postgres data volume. If you change it, `docker compose down -v` (destroys the volume) before `docker compose up -d` to have it re-apply.
 

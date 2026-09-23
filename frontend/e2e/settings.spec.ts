@@ -1,7 +1,7 @@
 import { expect, test } from "@playwright/test";
 import { EMAIL, expectHeading, signIn, uniqueSuffix } from "./helpers";
 
-const API_BASE_URL = process.env.E2E_API_URL ?? "http://127.0.0.1:8000/api/v1";
+const API_BASE_URL = process.env.E2E_API_URL ?? "http://127.0.0.1:8001/api/v1";
 
 /**
  * Settings pages render from the live API: the active organization

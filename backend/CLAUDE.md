@@ -8,8 +8,19 @@ OWNS
 - Cross-app conventions: tenant isolation, error envelope, pagination, auth.
 
 RUNNING LOCALLY
-- `infrastructure/docker-compose.yml` provides Postgres 16 with pgvector (host port 5442) and Redis (host port 6390) — remapped from the defaults because other local projects already hold 5432/6379 on this machine.
+- `infrastructure/docker-compose.yml` provides Postgres 16 with pgvector (host port 5472) and Redis (host port 6390) — remapped from the defaults because other local projects already hold 5432/6379 on this machine.
 - `.venv/` is the project's virtualenv (Python 3.10). Activate or call `.venv/Scripts/python.exe` directly on Windows.
+- `make run` starts the dev server on **8001** (`RUN_PORT` overrides it), not
+  Django's default 8000 — another local project already holds 8000, the same
+  collision that moved Postgres/Redis to 5472/6390. The committed
+  `frontend/.env.example` / BFF fallback point at 8001 to match.
+- Start docker-compose first. Both services carry `restart: unless-stopped`
+  so they come back on their own after Docker Desktop restarts or the machine
+  reboots — without it Docker's default (`no`) leaves them exited (255) for
+  good, which is what made the backend look like it "stopped by itself".
+  If Postgres is genuinely down, the DB connect now fails in
+  `DB_CONNECT_TIMEOUT_SECONDS` (default 10) with an `OperationalError`
+  instead of hanging forever.
 - `manage.py` defaults to `config.settings.dev`; tests use `config.settings.test` (`manage.py test --settings=config.settings.test`).
 - The Postgres role Django connects as (`easybook_app`, see `.env`) is deliberately NOT the superuser created by the official Postgres image — superusers always bypass Row Level Security. Never point `DB_USER` at the `easybook` superuser role.
 

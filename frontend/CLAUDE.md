@@ -12,8 +12,13 @@ Vitest 4 · Playwright 1.63. Node 20.9+. All dependencies pinned exactly.
 RUNNING LOCALLY
 `npm run dev` (needs `API_BASE_URL`, see `.env.example`). The backend must be
 running — `infrastructure/docker-compose.yml` for Postgres/Redis, then
-`backend/.venv/Scripts/python.exe manage.py runserver 127.0.0.1:8000`
+`make -C backend run` (Django on **8001**, not the default 8000 — another
+project on this machine holds 8000; override with `make -C backend run
+RUN_PORT=...`). The raw form is
+`backend/.venv/Scripts/python.exe manage.py runserver 127.0.0.1:8001`
 (the venv's python — a global/conda `python` lacks the dependencies).
+If Postgres/Redis are not up, manage.py hangs on the DB connect instead of
+printing an error.
 Open `http://localhost:3000`, not the "Network" LAN address `next dev`
 prints: Next 16 blocks its dev resources for any other host unless it is in
 `allowedDevOrigins`, so the page never hydrates — forms then fall back to a
@@ -25,7 +30,7 @@ one worker, because every spec signs in as the same user. The backend
 throttles per user (300/min) and sign-in (20/min); a full run against a
 production build is fast enough to hit both, so start the E2E backend with
 `THROTTLE_USER=20000/min THROTTLE_AUTH=2000/min` (test environment only) and
-pass `E2E_API_URL` when Django is not on :8000. Run the suite against
+pass `E2E_API_URL` when Django is not on :8001. Run the suite against
 `next build && next start` before release — two production-only failures
 (a CSP https upgrade, a redirect loop) never reproduced under `next dev`. Backend tests must run with
 `DJANGO_SETTINGS_MODULE=config.settings.test` (dev settings leave Celery
