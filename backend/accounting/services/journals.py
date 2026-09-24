@@ -86,7 +86,20 @@ def create_draft_journal(
 @transaction.atomic
 def replace_draft_lines(*, journal: JournalEntry, lines: list[dict]) -> JournalEntry:
     """Replaces all lines on a DRAFT journal. Raises if the journal is not a
-    draft — posted journals are immutable (accounting/CLAUDE.md)."""
+    draft — posted journals are immutable (accounting/CLAUDE.md).
+
+    The caller's `journal` may be stale: a concurrent post_journal can commit
+    between the request loading it and this call. So the authoritative row is
+    locked first — the same lock post_journal takes first, so the two
+    serialize in one order and cannot deadlock — and the status is re-read
+    under that lock. The in-memory status is never trusted."""
+    journal = (
+        JournalEntry.objects.select_for_update()
+        .filter(pk=journal.pk, organization_id=journal.organization_id)
+        .first()
+    )
+    if journal is None:
+        raise ApplicationError("Journal entry not found.", code="journal_not_found", status_code=404)
     if journal.status != JournalStatus.DRAFT:
         raise ApplicationError("Only draft journal entries can be modified.", code="journal_not_draft")
     if len(lines) < 2:

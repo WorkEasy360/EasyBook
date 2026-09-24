@@ -142,10 +142,13 @@ class JournalLine(TenantScopedModel):
         return JournalEntry.all_objects.filter(pk=self.journal_entry_id).values_list("status", flat=True).first()
 
     def save(self, *args, **kwargs):
-        if not self._state.adding:
-            parent_status = self._parent_status()
-            if parent_status and parent_status != JournalStatus.DRAFT:
-                raise ValueError("Cannot modify a line belonging to a posted journal entry.")
+        # Adding counts too: a new line on a posted journal changes its
+        # totals exactly as much as editing one. The database trigger
+        # (migration 0005) enforces the same for every path, including
+        # queryset update/delete and bulk_create, which never call save().
+        parent_status = self._parent_status()
+        if parent_status and parent_status != JournalStatus.DRAFT:
+            raise ValueError("Cannot modify a line belonging to a posted journal entry.")
         super().save(*args, **kwargs)
 
     def delete(self, *args, **kwargs):
