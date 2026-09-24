@@ -7,53 +7,51 @@ this, and doing so requires explicit human approval regardless — see root
 `CLAUDE.md` and the phase 12 prompt's "IMPORTANT PRODUCTION ACTION RULE").
 Review every default in `variables.tf` before the first real `apply`.
 
+## Before the first `apply`: what you must supply
+
+HTTPS is mandatory. There is no plaintext mode, and no way to serve the app
+on the ALB's own `*.elb.amazonaws.com` name, because nobody can obtain a
+certificate for it. You need:
+
+1. **A hostname you control DNS for**, passed as `domain_name`. It must be a
+   bare lowercase hostname such as `staging.books.example.com`, with no
+   scheme, port, path or wildcard. Staging and production each use their own
+   hostname. Every origin setting derives from it: Django's `ALLOWED_HOSTS`,
+   `CSRF_TRUSTED_ORIGINS` and `CORS_ALLOWED_ORIGINS`, and the frontend's
+   `API_BASE_URL`. Both applications refuse to start if any of these is
+   missing or unsafe.
+2. **An issued ACM certificate** for exactly that hostname, in this stack's
+   region, passed as `acm_certificate_arn`. Validate it through DNS at your
+   DNS provider before running `apply`.
+3. **The two image URIs** for the release, `container_image` and
+   `frontend_container_image`. Both use the same commit SHA and are never
+   `:latest`. CI pushes them after merge to `main`
+   (`.github/workflows/release-images.yml`), once the deploy role exists.
+
+After `apply`, point the hostname at the ALB with a CNAME or ALIAS record to
+`terraform output alb_dns_name`. The app is then served at
+`terraform output app_url`.
+
 ## What this does NOT do
 
-- **Does not push an image.** `.github/workflows/backend-ci.yml`'s `container`
-  job builds and scans an image but does not yet push to `aws_ecr_repository.backend`
-  — add a push step once this stack is actually applied and its ECR repo exists.
-- **Does not create the app's own Postgres role.** RDS's master user
-  (`manage_master_user_password`, AWS-managed) is never the app's runtime
-  role (global rule 4). Terraform has no network path into the private-subnet
-  RDS instance from wherever `apply` runs, so this is a one-time manual/CI
-  step — see below.
-- **Does not run `CREATE EXTENSION vector;`.** Same reason. `backend/ai/checks.py`'s
-  `pre_migrate` hook fails the `ai` app's migration clearly if this is skipped
-  — it will not fail silently.
-- **Does not stand up CloudFront.** See `waf.tf`'s header comment: WAF is
-  attached directly to the ALB (regional scope) instead, since there is no
-  frontend yet to justify a CDN hop. Revisit once `frontend/` has a real build.
-- **Does not configure a custom domain/TLS cert** unless `var.domain_name` /
-  `var.acm_certificate_arn` are set — issuing and validating an ACM
-  certificate is a manual (or separate Terraform run's) step tied to whichever
-  DNS provider actually holds the domain.
+- **Does not create DNS records or certificates.** Both belong to whichever
+  DNS provider holds the domain. See above.
+- **Does not bootstrap the database during `apply`.** Terraform has no
+  network path into the private-subnet RDS instance. The one-off
+  `db-bootstrap` and `migrate` ECS tasks do it instead (see below).
+- **Does not stand up CloudFront.** WAF is attached directly to the ALB
+  (regional scope). See `waf.tf`.
+- **Does not expose Django admin.** Only `/api/v1/*` is routed to the API;
+  everything else goes to the frontend.
 
 ## One-time post-`apply` setup
 
-Run these once, from something with network access to the VPC (a bastion, an
-ECS Exec session into a running task, or a one-off ECS `RunTask` — not from a
-laptop, since RDS/Redis are private-subnet only by design):
-
-```sql
--- 1. As the RDS master user (password: the secret at
---    `terraform output rds_master_user_secret_arn`):
-CREATE EXTENSION IF NOT EXISTS vector;
-
--- 2. Create the app's own non-superuser role (password: the secret at
---    `terraform output app_db_credentials_secret_arn`, key "password").
---    Mirrors infrastructure/postgres-init/01-app-role.sql exactly.
-CREATE ROLE easybook_app WITH LOGIN PASSWORD '<from-the-secret>';
-GRANT ALL PRIVILEGES ON DATABASE easybook TO easybook_app;
-GRANT CREATE, USAGE ON SCHEMA public TO easybook_app;
-```
-
-Then run migrations once (also needs VPC network access — a one-off ECS
-`RunTask` using the `api` task definition with `command` overridden to
-`["python", "manage.py", "migrate"]` and `DB_STATEMENT_TIMEOUT_MS=0` in its
-environment overrides is the standard pattern (every app connection otherwise
-cancels statements after 30s, which a large index build can exceed); do not bake an
-automatic `migrate` into every container's normal startup — phase 12 section
-48-49 on expand/migrate/contract deploys and avoiding concurrent migration races).
+Database bootstrap (pgvector and the non-superuser `easybook_app` role) and
+every migration run as one-off ECS tasks defined in `oneoff_tasks.tf`. There
+is no bastion, no ECS Exec, and no psql in any image. Only the `db-bootstrap`
+task can read the RDS master secret. Exact commands, and what to do when
+either task fails, are in
+[`../runbooks/database-bootstrap.md`](../runbooks/database-bootstrap.md).
 
 ## Remote state (required)
 
@@ -89,39 +87,35 @@ terraform init -backend-config=backend/staging.s3.tfbackend
 required by the backend") rather than silently falling back to local state.
 Each environment gets its own state key; never share one.
 
-## The frontend needs one secret from this stack
+## Frontend wiring
 
-`<name>/bff-proxy-secret` (Secrets Manager, generated by `secrets.tf`) is
-shared: the API trusts a forwarded client address only when the caller
-presents it (`backend/core/client_ip.py`). The Next.js deployment must read
-the same value as `BFF_PROXY_SECRET`, with `TRUSTED_PROXY_COUNT` set to the
-number of proxies in front of it. Until both are set, every browser user is
-rate-limited as one client.
+The `web` service (`ecs.tf`) reads `<name>/bff-proxy-secret` as
+`BFF_PROXY_SECRET`, the same secret the API uses to trust the browser
+address the BFF forwards (`backend/core/client_ip.py`). `TRUSTED_PROXY_COUNT`
+is 1 on both, because the ALB is the only proxy. The frontend reaches the
+API through `https://<domain_name>/api/v1`: the same ALB, TLS and WAF path as
+any client. Its NAT egress addresses are exempt from the WAF's per-IP rate
+rule, because Django throttles per real client instead (`waf.tf`).
 
 ## Variables that have no safe default
 
-`terraform apply` will prompt for (or fail without) these — see each one's
-description in `variables.tf` for why a default would be wrong to invent:
+`terraform apply` fails without these. See each one's description in
+`variables.tf`.
 
-- `environment` — `staging` or `production`; never share one `.tfstate`/database/secret set between them.
-- `container_image` — CI/CD supplies this per build; must never float on `:latest`.
-
-Everything else has a documented default suitable for a first `staging` apply,
-including `domain_name = ""` and `acm_certificate_arn = ""` — the stack is
-apply-able and smoke-testable over plain HTTP against the ALB's own DNS name
-before either exists, but `config/settings/production.py`'s own preflight
-(`config/settings/preflight.py`) will correctly refuse to boot the Django app
-with `DJANGO_ALLOWED_HOSTS` empty, so the ECS `api` service will crash-loop
-until `domain_name` is set — that is the intended fail-closed behavior, not a
-bug to work around here.
+- `environment`: `staging` or `production`. Never share state, databases or
+  secrets between them.
+- `domain_name` and `acm_certificate_arn`: see "Before the first `apply`".
+- `container_image` and `frontend_container_image`: the release's immutable
+  image URIs.
 
 ## Validating changes
 
 ```
 terraform fmt -check -recursive
-terraform init            # downloads providers only; no AWS credentials needed
+terraform init -backend=false   # providers only; no AWS credentials needed
 terraform validate
+terraform test                  # mocked providers; no AWS credentials, no AWS calls
 ```
 
-`terraform plan`/`apply` need real AWS credentials and are out of scope for
-this repo's automated checks.
+`terraform plan`/`apply` against a real account need real credentials and
+explicit approval. They are out of scope for this repo's automated checks.

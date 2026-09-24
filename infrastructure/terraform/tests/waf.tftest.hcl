@@ -15,6 +15,10 @@ mock_provider "random" {}
 variables {
   environment     = "staging"
   container_image = "123456789012.dkr.ecr.ap-south-1.amazonaws.com/easybook-staging-backend@sha256:0000000000000000000000000000000000000000000000000000000000000000"
+
+  frontend_container_image = "123456789012.dkr.ecr.ap-south-1.amazonaws.com/easybook-staging-frontend@sha256:0000000000000000000000000000000000000000000000000000000000000000"
+  domain_name              = "staging.books.example.com"
+  acm_certificate_arn      = "arn:aws:acm:ap-south-1:123456789012:certificate/00000000-0000-0000-0000-000000000000"
 }
 
 run "large_authenticated_bodies_are_not_blocked_by_the_8kb_size_rule" {

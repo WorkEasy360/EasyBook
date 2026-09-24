@@ -164,6 +164,11 @@ DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
 # --- Caching / Celery -------------------------------------------------------
 
+# Boot-time refusal to run as a superuser/BYPASSRLS database role
+# (core/db_preflight.py). Always on in production (production.py); off here
+# only so importing settings never needs a database.
+DB_ROLE_PREFLIGHT = False
+
 # 127.0.0.1 for the same reason as DB_HOST above.
 REDIS_URL = env("REDIS_URL", default="redis://127.0.0.1:6379/0")
 

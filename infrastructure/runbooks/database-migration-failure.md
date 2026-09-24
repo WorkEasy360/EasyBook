@@ -11,9 +11,9 @@ but the failure only surfaces against real production data shape/volume.
 `backend/ai/checks.py`'s `pre_migrate` hook raises `ImproperlyConfigured`
 with a message naming `CREATE EXTENSION vector` if the `ai` app's migration
 is about to run against a database missing the pgvector extension. This is
-not a migration bug — it's the preflight doing its job. Fix: run
-`CREATE EXTENSION IF NOT EXISTS vector;` as the RDS master user
-(`infrastructure/terraform/README.md`'s one-time setup), then re-run migrate.
+not a migration bug. It is the preflight doing its job. To fix it, run the
+one-off `db-bootstrap` task ([database-bootstrap.md](database-bootstrap.md)),
+then re-run the migration.
 
 ## Otherwise
 

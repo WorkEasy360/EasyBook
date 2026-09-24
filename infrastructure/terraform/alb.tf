@@ -1,8 +1,8 @@
-# Public ALB (phase 12 section 7/9). Routes only to the "api" ECS service —
-# there is no frontend/Next.js deployment yet (root CLAUDE.md repo map:
-# frontend/ has no build), so CloudFront (cloudfront.tf) has nothing but this
-# ALB to originate from for now; wire a second origin/behavior there once
-# phase 12 section 74's frontend work exists.
+# Public ALB (phase 12 section 7/9), HTTPS only, one hostname
+# (var.domain_name). /api/v1/* goes to the Django API, everything else to the
+# Next.js frontend (web service, ecs.tf). Next's own /api/bff, /api/auth and
+# /api/health routes stay on the frontend because only /api/v1/* is routed to
+# Django. Django admin (/admin/) is deliberately not routed publicly.
 
 resource "aws_lb" "main" {
   name               = "${local.name}-alb"
@@ -40,10 +40,32 @@ resource "aws_lb_target_group" "api" {
   deregistration_delay = 30
 }
 
-# HTTPS listener only exists once a certificate is issued (var.acm_certificate_arn)
-# — a business/DNS decision this file cannot make for you (phase 12 section 9).
+resource "aws_lb_target_group" "web" {
+  name        = "${local.name}-web"
+  port        = 3000
+  protocol    = "HTTP"
+  vpc_id      = aws_vpc.main.id
+  target_type = "ip"
+
+  health_check {
+    # Liveness only (frontend/src/app/api/health/route.ts): never depends on
+    # the API, so an API outage cannot get healthy frontend tasks replaced.
+    path                = "/api/health"
+    matcher             = "200"
+    interval            = 30
+    timeout             = 5
+    healthy_threshold   = 2
+    unhealthy_threshold = 3
+  }
+
+  deregistration_delay = 30
+}
+
+# HTTPS is not optional. With no certificate the previous design forwarded
+# plaintext HTTP while Django (SECURE_SSL_REDIRECT) redirected every request
+# to an HTTPS port nothing listened on: an environment that served nothing.
+# var.domain_name and var.acm_certificate_arn are now required (variables.tf).
 resource "aws_lb_listener" "https" {
-  count             = var.acm_certificate_arn != "" ? 1 : 0
   load_balancer_arn = aws_lb.main.arn
   port              = 443
   protocol          = "HTTPS"
@@ -52,30 +74,39 @@ resource "aws_lb_listener" "https" {
 
   default_action {
     type             = "forward"
-    target_group_arn = aws_lb_target_group.api.arn
+    target_group_arn = aws_lb_target_group.web.arn
   }
 }
 
-# Before a certificate exists this forwards plaintext HTTP directly (so the
-# stack is smoke-testable end to end from day one); once var.acm_certificate_arn
-# is set it switches to a 301 redirect to HTTPS instead, matching
-# config/settings/production.py's own SECURE_SSL_REDIRECT expectation.
+resource "aws_lb_listener_rule" "api" {
+  listener_arn = aws_lb_listener.https.arn
+  priority     = 10
+
+  action {
+    type             = "forward"
+    target_group_arn = aws_lb_target_group.api.arn
+  }
+
+  condition {
+    path_pattern {
+      values = ["/api/v1/*"]
+    }
+  }
+}
+
+# Port 80 only ever redirects to HTTPS.
 resource "aws_lb_listener" "http" {
   load_balancer_arn = aws_lb.main.arn
   port              = 80
   protocol          = "HTTP"
 
   default_action {
-    type             = var.acm_certificate_arn != "" ? "redirect" : "forward"
-    target_group_arn = var.acm_certificate_arn != "" ? null : aws_lb_target_group.api.arn
+    type = "redirect"
 
-    dynamic "redirect" {
-      for_each = var.acm_certificate_arn != "" ? [1] : []
-      content {
-        port        = "443"
-        protocol    = "HTTPS"
-        status_code = "HTTP_301"
-      }
+    redirect {
+      port        = "443"
+      protocol    = "HTTPS"
+      status_code = "HTTP_301"
     }
   }
 }

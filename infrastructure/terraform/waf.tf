@@ -155,6 +155,23 @@ resource "aws_wafv2_web_acl" "alb" {
       rate_based_statement {
         limit              = 3000
         aggregate_key_type = "IP"
+
+        # The frontend's server-side calls to /api/v1 leave the VPC through
+        # the NAT gateway(s) and come back through this ALB, so every user's
+        # API traffic shares a handful of NAT addresses: counted per IP they
+        # would trip this limit together. They are exempted here; Django
+        # still throttles each real client by the address the BFF asserts
+        # with its shared secret (backend/core/client_ip.py). Browser
+        # requests to the frontend itself keep this per-IP limit.
+        scope_down_statement {
+          not_statement {
+            statement {
+              ip_set_reference_statement {
+                arn = aws_wafv2_ip_set.nat_egress.arn
+              }
+            }
+          }
+        }
       }
     }
     visibility_config {
@@ -235,4 +252,11 @@ resource "aws_wafv2_web_acl_logging_configuration" "alb" {
   }
 
   depends_on = [aws_cloudwatch_log_resource_policy.waf_logs]
+}
+
+resource "aws_wafv2_ip_set" "nat_egress" {
+  name               = "${local.name}-nat-egress"
+  scope              = "REGIONAL"
+  ip_address_version = "IPV4"
+  addresses          = [for eip in aws_eip.nat : "${eip.public_ip}/32"]
 }

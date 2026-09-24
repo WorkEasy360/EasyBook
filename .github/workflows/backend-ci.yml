@@ -3,22 +3,23 @@ name: Backend CI
 # The gate described in the build spec, as far as it can run without cloud
 # credentials: lint -> security -> dependency audit -> migration drift ->
 # the full test suite (unit, integration, API, RLS, concurrency, E2E) ->
-# container build -> container vulnerability scan. Staged deploy is still
-# absent — that needs a registry and an environment to deploy to, neither of
-# which exists yet (phase 12 slice 3/5) — adding it now would mean a
-# pipeline that cannot actually be green.
+# container build -> container vulnerability scan -> (main only) publish the
+# exact-SHA image to ECR through GitHub OIDC. Deployment is NOT automatic: it
+# stays a manual, approved step (infrastructure/runbooks/deploy.md).
 
 on:
   push:
-    branches: [main, master]
+    branches: [main]
   pull_request:
+    branches: [main]
   workflow_dispatch:
 
 # A second push to the same branch cancels the first — a financial test suite
 # is slow enough that queued duplicate runs are pure waste.
 concurrency:
   group: backend-ci-${{ github.ref }}
-  cancel-in-progress: true
+  # Never cancel a run on main: it may be publishing release images.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
@@ -97,6 +98,10 @@ jobs:
       DB_PORT: '5432'
       REDIS_URL: redis://localhost:6379/0
       SECRET_KEY: ci-only-not-a-real-secret
+      # Lets backend/ops/tests/test_db_bootstrap.py run the first-environment
+      # bootstrap against this real server (scratch database + role, dropped
+      # afterwards). The service container's own throwaway credentials.
+      DB_BOOTSTRAP_TEST_ADMIN_DSN: host=localhost port=5432 dbname=easybook user=easybook password=easybook
       DJANGO_SETTINGS_MODULE: config.settings.test
 
     steps:
@@ -161,9 +166,8 @@ jobs:
       - name: Test suite
         run: python manage.py test --settings=config.settings.test --verbosity=2
 
-  # Builds and scans only — pushing to a registry needs a target that doesn't
-  # exist yet (phase 12 slice 3/5: ECR + the AWS account it lives in). Runs
-  # after `test` passes: a broken app has no business being scanned or shipped.
+  # Every PR: build and scan. Publishing happens only in `publish`, on main.
+  # Runs after `test` passes: a broken app has no business being scanned.
   container:
     name: Build image, scan for vulnerabilities
     needs: [static, test]
@@ -190,3 +194,62 @@ jobs:
           severity: CRITICAL,HIGH
           ignore-unfixed: true
           trivyignores: backend/.trivyignore
+
+      - name: Container smoke (non-root, bootstrap entry point present)
+        run: |
+          test "$(docker run --rm --entrypoint id easybook-backend:${{ github.sha }} -u)" = "10001"
+          # The bootstrap task's entry point exists and refuses to run unconfigured.
+          if docker run --rm easybook-backend:${{ github.sha }} python -m ops.db_bootstrap; then
+            echo "db_bootstrap ran without configuration"; exit 1
+          fi
+
+  # Main only, after every gate above has passed. Builds the image again from
+  # the same commit, scans it with the same policy, and pushes it tagged with
+  # the exact commit SHA — never :latest (ECR tags are IMMUTABLE). Keyless:
+  # GitHub OIDC -> the release role (infrastructure/terraform/github_oidc.tf),
+  # which trusts only main of this repository and can only push to the two
+  # EasyBook repositories. Skipped until the repository variables exist.
+  # Nothing is deployed from here: deployment stays a manual, approved step.
+  publish:
+    name: Publish backend image (main only)
+    needs: [static, test, container]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.AWS_RELEASE_ROLE_ARN != ''
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09  # v5
+
+      - name: Build image
+        run: docker build -t easybook-backend:${{ github.sha }} .
+
+      - name: Scan image for vulnerabilities (Trivy)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25  # v0.36.0
+        with:
+          image-ref: easybook-backend:${{ github.sha }}
+          format: table
+          exit-code: '1'
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          trivyignores: backend/.trivyignore
+
+      - name: Authenticate to AWS (OIDC, no static keys)
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd  # v6.3.0
+        with:
+          role-to-assume: ${{ vars.AWS_RELEASE_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+          role-session-name: easybook-release-${{ github.run_id }}
+
+      - name: Push the commit-SHA tag
+        env:
+          REPOSITORY: ${{ vars.ECR_BACKEND_REPOSITORY }}
+          SHA: ${{ github.sha }}
+        run: |
+          REGISTRY="${REPOSITORY%%/*}"
+          aws ecr get-login-password | docker login --username AWS --password-stdin "$REGISTRY"
+          docker tag "easybook-backend:$SHA" "$REPOSITORY:$SHA"
+          docker push "$REPOSITORY:$SHA"
+          # Proves the exact-SHA image exists for the release step that follows.
+          aws ecr describe-images --repository-name "${REPOSITORY#*/}" --image-ids imageTag="$SHA" \
+            --query 'imageDetails[0].imageDigest' --output text

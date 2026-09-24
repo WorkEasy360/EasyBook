@@ -27,3 +27,12 @@ mock_data "aws_caller_identity" {
     account_id = "123456789012"
   }
 }
+
+# A known ARN at plan time, so policy/secret wiring can be asserted
+# (tests/db_bootstrap.tftest.hcl). Every mocked secret shares it; the master
+# secret's ARN (above) is distinct.
+mock_resource "aws_secretsmanager_secret" {
+  defaults = {
+    arn = "arn:aws:secretsmanager:ap-south-1:123456789012:secret:app-mock"
+  }
+}

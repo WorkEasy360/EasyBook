@@ -10,6 +10,7 @@
 # full filesystem search of the built image — not something this repo's
 # Dockerfile can fix; only an upstream pip release that bumps its vendored
 # copy can.
+# Review by: 2026-12-31, or on the next pip release, whichever is first.
 GHSA-6v7p-g79w-8964
 
 # Not an actual installed "setuptools 70.3.0" package: every real setuptools
@@ -20,4 +21,5 @@ GHSA-6v7p-g79w-8964
 # setuptools version pip's wheel was built with), which a metadata parser can
 # mistake for an installed dependency. Confirmed via `trivy image` +
 # filesystem search, 2026-09-16.
+# Review by: 2026-12-31, or on the next pip release, whichever is first.
 CVE-2025-47273

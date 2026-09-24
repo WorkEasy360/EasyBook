@@ -125,3 +125,45 @@ class ProductionSettingsWiringTests(SimpleTestCase):
         result = _run_check({"DJANGO_ALLOWED_HOSTS": "*"})
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("DJANGO_ALLOWED_HOSTS", result.stderr)
+
+
+class HostnameTopologyTests(SimpleTestCase):
+    """P0 remediation: staging/production are HTTPS-only on an explicit
+    hostname. Hosts must be bare hostnames and every trusted origin must be an
+    https:// origin for one of them — anything else fails at start-up."""
+
+    def _check(self, **overrides):
+        validate_production_settings(**{**VALID_KWARGS, **overrides})
+
+    def test_explicitly_empty_allowed_hosts_rejected(self):
+        with self.assertRaisesMessage(RuntimeError, "DJANGO_ALLOWED_HOSTS"):
+            self._check(allowed_hosts_raw="", allowed_hosts=[])
+
+    def test_allowed_hosts_must_be_bare_hostnames(self):
+        for bad in ["https://app.example.com", "app.example.com:443", "app.example.com/api", ".example.com", "*.example.com", "APP EXAMPLE"]:
+            with self.subTest(host=bad), self.assertRaisesMessage(RuntimeError, "DJANGO_ALLOWED_HOSTS"):
+                self._check(allowed_hosts_raw=bad, allowed_hosts=[bad])
+
+    def test_csrf_origins_must_be_https(self):
+        with self.assertRaisesMessage(RuntimeError, "CSRF_TRUSTED_ORIGINS"):
+            self._check(csrf_trusted_origins=["http://app.example.com"])
+
+    def test_csrf_origins_must_be_an_allowed_host(self):
+        with self.assertRaisesMessage(RuntimeError, "CSRF_TRUSTED_ORIGINS"):
+            self._check(csrf_trusted_origins=["https://evil.example.net"])
+
+    def test_csrf_origin_wildcards_rejected(self):
+        with self.assertRaisesMessage(RuntimeError, "CSRF_TRUSTED_ORIGINS"):
+            self._check(csrf_trusted_origins=["https://*.example.com"])
+
+    def test_cors_origins_must_be_https(self):
+        with self.assertRaisesMessage(RuntimeError, "CORS_ALLOWED_ORIGINS"):
+            self._check(cors_allowed_origins_raw="http://app.example.com", cors_allowed_origins=["http://app.example.com"])
+
+    def test_csrf_origins_derive_from_allowed_hosts(self):
+        from config.settings.preflight import derive_csrf_trusted_origins
+
+        self.assertEqual(
+            derive_csrf_trusted_origins(["app.example.com", "staging.example.com"]),
+            ["https://app.example.com", "https://staging.example.com"],
+        )

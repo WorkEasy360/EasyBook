@@ -188,21 +188,50 @@ variable "ecs_services" {
 # --- Domain / TLS / CDN ----------------------------------------------------
 
 variable "domain_name" {
-  description = "Public apex/API domain (e.g. api.easybook.example). Empty string defers Route53/ACM/CloudFront custom-domain resources until a real domain is decided — a business decision, not a default this file should invent (phase 12 section 9)."
+  description = <<-EOT
+    The one HTTPS hostname users reach (staging included), e.g.
+    staging.books.example.com. Required: there is no plaintext mode. You must
+    control its DNS (to point it at the ALB) and hold a validated ACM
+    certificate for it in this stack's region (var.acm_certificate_arn). A
+    bare hostname: no scheme, port, path or wildcard. Django's ALLOWED_HOSTS,
+    CSRF_TRUSTED_ORIGINS and CORS, and the frontend's API_BASE_URL, all derive
+    from it.
+  EOT
   type        = string
-  default     = ""
+
+  validation {
+    condition     = can(regex("^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\\.)+[a-z]{2,63}$", var.domain_name))
+    error_message = "domain_name must be a lowercase DNS hostname such as staging.books.example.com (no scheme, port, path or wildcard)."
+  }
 }
 
 variable "acm_certificate_arn" {
-  description = "ACM certificate ARN for the ALB/CloudFront listener, in the region CloudFront requires (us-east-1) for the CloudFront cert and this stack's own region for the ALB cert. No default — must be issued and validated out of band first."
+  description = "ARN of an ISSUED ACM certificate covering var.domain_name, in this stack's region. Issued and DNS-validated out of band before the first apply. Required: the ALB serves HTTPS only."
   type        = string
-  default     = ""
+
+  validation {
+    condition     = can(regex("^arn:aws:acm:[a-z0-9-]+:[0-9]{12}:certificate/[A-Za-z0-9-]+$", var.acm_certificate_arn))
+    error_message = "acm_certificate_arn must be an ACM certificate ARN (arn:aws:acm:<region>:<account>:certificate/<id>)."
+  }
 }
 
-variable "frontend_origin_domain" {
-  description = "Domain/URL of the deployed Next.js frontend, once phase 12 section 74's frontend work exists. Empty = CloudFront routes everything to the API only (frontend/ has no build yet — see root CLAUDE.md repo map)."
+variable "frontend_container_image" {
+  description = "Full ECR image URI of the frontend (frontend/Dockerfile) for this release, tagged with the same commit SHA as container_image. No default, never :latest."
   type        = string
-  default     = ""
+}
+
+variable "web_service" {
+  description = "Size and count of the Next.js frontend service (frontend/Dockerfile)."
+  type = object({
+    cpu           = number
+    memory        = number
+    desired_count = number
+  })
+  default = {
+    cpu           = 256
+    memory        = 512
+    desired_count = 2
+  }
 }
 
 # --- Alerting --------------------------------------------------------------
@@ -219,4 +248,35 @@ variable "extra_tags" {
   description = "Additional tags merged onto every resource (e.g. cost-center)."
   type        = map(string)
   default     = {}
+}
+
+# --- GitHub Actions OIDC (github_oidc.tf) ----------------------------------
+
+variable "github_repository" {
+  description = "owner/name of the GitHub repository whose workflows may assume the release (and, if enabled, deploy) role."
+  type        = string
+  default     = "WorkEasy360/EasyBook"
+
+  validation {
+    condition     = can(regex("^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$", var.github_repository))
+    error_message = "github_repository must be owner/name."
+  }
+}
+
+variable "github_oidc_provider_arn" {
+  description = "ARN of an EXISTING GitHub OIDC provider in this account, if one already exists (only one per issuer URL is allowed). Empty = this stack creates it."
+  type        = string
+  default     = ""
+}
+
+variable "enable_github_deploy_role" {
+  description = "Create the GitHub deploy role. Leave false until the protected GitHub environment (var.github_deploy_environment) exists with required reviewers: automatic deploys are not enabled yet."
+  type        = bool
+  default     = false
+}
+
+variable "github_deploy_environment" {
+  description = "The protected GitHub environment (with required reviewers) whose jobs alone may assume the deploy role."
+  type        = string
+  default     = "staging"
 }

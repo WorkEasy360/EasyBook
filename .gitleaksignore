@@ -1,0 +1,7 @@
+# Justified gitleaks suppressions: one fingerprint per line, each with its
+# reason. Review every entry when the file it names changes.
+#
+# Fixed sign-up password for a throwaway end-to-end test user created against
+# a local/dev backend (frontend/e2e/register.spec.ts). Not a credential for
+# any real account or environment.
+0da73a1e2d291e48728ac2f6bb97b00bab6a1d3a:frontend/e2e/register.spec.ts:generic-api-key:10

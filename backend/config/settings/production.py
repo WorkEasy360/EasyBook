@@ -1,8 +1,12 @@
 from .base import *
 from .base import env
-from .preflight import validate_production_settings
+from .preflight import derive_csrf_trusted_origins, validate_production_settings
 
 DEBUG = False
+
+# Not configurable: a production process may never run as a role that
+# bypasses RLS (core/db_preflight.py, config/asgi.py, config/celery.py).
+DB_ROLE_PREFLIGHT = True
 
 SECURE_SSL_REDIRECT = True
 SESSION_COOKIE_SECURE = True
@@ -28,7 +32,11 @@ SECURE_REDIRECT_EXEMPT = [
 # requests. Django's CSRF default (same-origin only) is wrong for a separately
 # hosted Next.js frontend, but there is no safe default to fall back to here —
 # an empty list must fail closed, not silently accept every origin.
-CSRF_TRUSTED_ORIGINS = env.list("CSRF_TRUSTED_ORIGINS", default=[])
+#
+# Unset, it derives https://<host> from DJANGO_ALLOWED_HOSTS (the single
+# HTTPS hostname the deployment serves); set explicitly, every entry must
+# still be https:// on one of those hosts. Either way validated below.
+CSRF_TRUSTED_ORIGINS = env.list("CSRF_TRUSTED_ORIGINS", default=derive_csrf_trusted_origins(ALLOWED_HOSTS))
 
 # base.py's defaults (localhost hosts, localhost:3000 CORS, local document
 # storage, an insecure placeholder secret key) exist so `manage.py runserver`

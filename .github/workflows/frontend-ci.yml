@@ -1,8 +1,10 @@
 name: Frontend CI
 
 # The frontend's own gate (frontend/CLAUDE.md): typecheck -> lint (0 errors
-# AND 0 warnings) -> unit tests -> production build. `next build` is part of
-# the gate because typedRoutes turns a broken <Link> into a build error.
+# AND 0 warnings) -> unit tests -> production build -> dependency audit ->
+# production image build, run and Trivy scan -> (main only) publish the
+# exact-SHA image to ECR through GitHub OIDC. `next build` is part of the gate
+# because typedRoutes turns a broken <Link> into a build error.
 # Playwright E2E needs a running backend and is not part of this gate yet.
 #
 # Exists because the whole frontend once lived only on a developer's disk —
@@ -10,13 +12,15 @@ name: Frontend CI
 
 on:
   push:
-    branches: [main, master]
+    branches: [main]
   pull_request:
+    branches: [main]
   workflow_dispatch:
 
 concurrency:
   group: frontend-ci-${{ github.ref }}
-  cancel-in-progress: true
+  # Never cancel a run on main: it may be publishing release images.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
@@ -34,7 +38,9 @@ jobs:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09  # v5
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
         with:
-          node-version: '20'
+          # Node 24 (active LTS) — the same major as frontend/Dockerfile.
+          # Node 20 reached end of life on 2026-04-30.
+          node-version: '24'
           cache: npm
           cache-dependency-path: frontend/package-lock.json
 
@@ -52,3 +58,97 @@ jobs:
 
       - name: Production build
         run: npm run build
+
+      - name: Dependency audit (production dependencies)
+        run: npm audit --omit=dev --audit-level=high
+
+  container:
+    name: Build image, run it, scan it
+    needs: [check]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09  # v5
+
+      - name: Build image
+        run: docker build -t easybook-frontend:${{ github.sha }} .
+
+      - name: Container smoke (fails closed unconfigured, serves when configured)
+        run: |
+          IMAGE=easybook-frontend:${{ github.sha }}
+          test "$(docker run --rm --entrypoint id "$IMAGE" -u)" = "1000"
+          # Missing production configuration must stop the server.
+          if timeout 60 docker run --rm "$IMAGE"; then
+            echo "frontend started without its required configuration"; exit 1
+          fi
+          docker run -d --name web -p 127.0.0.1:3000:3000 \
+            -e SESSION_COOKIE_SECURE=1 -e TRUSTED_PROXY_COUNT=1 \
+            -e API_BASE_URL=https://ci.invalid/api/v1 \
+            -e BFF_PROXY_SECRET=ci-only-not-a-real-secret-0123456789abcdef \
+            "$IMAGE"
+          for i in $(seq 1 30); do curl -sf http://127.0.0.1:3000/api/health && break; sleep 1; done
+          test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:3000/api/health)" = "200"
+          test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:3000/login)" = "200"
+          # Path traversal through the BFF must never reach the API.
+          test "$(curl -s -o /dev/null -w '%{http_code}' 'http://127.0.0.1:3000/api/bff/.%252e/.%252e/admin')" = "404"
+          docker rm -f web
+
+      - name: Scan image for vulnerabilities (Trivy)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25  # v0.36.0
+        with:
+          image-ref: easybook-frontend:${{ github.sha }}
+          format: table
+          exit-code: '1'
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          trivyignores: frontend/.trivyignore
+
+  # Main only, after every gate above has passed. Builds the image again from
+  # the same commit, scans it with the same policy, and pushes it tagged with
+  # the exact commit SHA — never :latest (ECR tags are IMMUTABLE). Keyless:
+  # GitHub OIDC -> the release role (infrastructure/terraform/github_oidc.tf),
+  # which trusts only main of this repository and can only push to the two
+  # EasyBook repositories. Skipped until the repository variables exist.
+  # Nothing is deployed from here: deployment stays a manual, approved step.
+  publish:
+    name: Publish frontend image (main only)
+    needs: [check, container]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.AWS_RELEASE_ROLE_ARN != ''
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09  # v5
+
+      - name: Build image
+        run: docker build -t easybook-frontend:${{ github.sha }} .
+
+      - name: Scan image for vulnerabilities (Trivy)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25  # v0.36.0
+        with:
+          image-ref: easybook-frontend:${{ github.sha }}
+          format: table
+          exit-code: '1'
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          trivyignores: frontend/.trivyignore
+
+      - name: Authenticate to AWS (OIDC, no static keys)
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd  # v6.3.0
+        with:
+          role-to-assume: ${{ vars.AWS_RELEASE_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+          role-session-name: easybook-release-${{ github.run_id }}
+
+      - name: Push the commit-SHA tag
+        env:
+          REPOSITORY: ${{ vars.ECR_FRONTEND_REPOSITORY }}
+          SHA: ${{ github.sha }}
+        run: |
+          REGISTRY="${REPOSITORY%%/*}"
+          aws ecr get-login-password | docker login --username AWS --password-stdin "$REGISTRY"
+          docker tag "easybook-frontend:$SHA" "$REPOSITORY:$SHA"
+          docker push "$REPOSITORY:$SHA"
+          # Proves the exact-SHA image exists for the release step that follows.
+          aws ecr describe-images --repository-name "${REPOSITORY#*/}" --image-ids imageTag="$SHA" \
+            --query 'imageDetails[0].imageDigest' --output text

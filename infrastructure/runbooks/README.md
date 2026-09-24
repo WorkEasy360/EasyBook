@@ -20,6 +20,7 @@ outage runbook for:
 ## Index
 
 - [deploy.md](deploy.md)
+- [database-bootstrap.md](database-bootstrap.md)
 - [rollback.md](rollback.md)
 - [database-migration-failure.md](database-migration-failure.md)
 - [database-restore.md](database-restore.md)
