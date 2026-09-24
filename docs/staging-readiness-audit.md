@@ -196,3 +196,39 @@ bucket name without a suffix, secrets without a recovery window, and the stale
 
 Items 1, 3 and 4 are mechanical. Item 2 needs product/infrastructure decisions
 that are not mine to make.
+
+---
+
+## Re-verification — 2026-09-24
+
+One commit since the audit (`d4f724d`, local dev port collisions). Each P0-B
+finding was re-checked against the code, not the notes above.
+
+| # | Status | Evidence |
+|---|--------|----------|
+| B1 | open | `FiscalYear` appears in no serializer, view, admin or management command. |
+| B2 | open | `rest_framework_simplejwt.token_blacklist` is in no settings module. |
+| B3 | open | `enable_execute_command` appears in no `.tf`. |
+| B4 | open | No workflow assumes an AWS role or logs in to ECR. |
+| B5 | open | `production.py:7` `SECURE_SSL_REDIRECT = True` unconditionally; `ecs.tf:78` `DJANGO_ALLOWED_HOSTS = var.domain_name`; `alb.tf` forwards plain HTTP when no certificate. |
+| B6 | open | `core/logging.py` emits `request_id` only if a filter attached it — none does; `extra` payloads still dropped. |
+| B7 | open | `core/middleware.py:51` takes `X-Request-ID` verbatim, unbounded. |
+| B8 | open | `accounting/services/journals.py:87` still no `select_for_update`, lines deleted via queryset. |
+
+**Raised to P0 — B9. The frontend has no deployment path.** `alb.tf` and
+`waf.tf` record that no Next.js deployment exists; `frontend/` has no
+Dockerfile, no `output: "standalone"`, no ECS service, no CI artifact, and
+`frontend_origin_domain` defaults to empty. `SESSION_COOKIE_SECURE`,
+`BFF_PROXY_SECRET` and `API_BASE_URL` exist only in `.env.example` with no
+startup preflight, so a first deployment would ship non-`Secure` session
+cookies and an inert client-IP assertion. The previous audit filed the cookie
+half as P1; without a deployment path the product cannot be reached at all.
+
+Still open, P1: the BFF dot-segment bypass —
+`new URL("http://api/api/v1/.%2e/.%2e/admin/").pathname` is `/admin/`.
+
+Clean on this date: `npm audit --omit=dev` and `pip-audit` report no known
+vulnerabilities. Still no git remote.
+
+**Verdict unchanged: NO-GO.** Nine P0s open, of which B1, B2, B6, B7, B8 are
+mechanical and B3, B4, B5, B9 need a decision first.

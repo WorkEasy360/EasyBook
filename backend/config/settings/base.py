@@ -98,7 +98,9 @@ DATABASES = {
         "NAME": env("DB_NAME", default="easybook"),
         "USER": env("DB_USER", default="easybook"),
         "PASSWORD": env("DB_PASSWORD", default="easybook"),
-        "HOST": env("DB_HOST", default="localhost"),
+        # 127.0.0.1, not "localhost": on Windows the latter tries ::1 first and
+        # stalls ~2s per connection against an IPv4-only Docker port (.env.example).
+        "HOST": env("DB_HOST", default="127.0.0.1"),
         "PORT": env("DB_PORT", default="5432"),
         # Every request is wrapped in a transaction so that PostgreSQL RLS's
         # SET LOCAL tenant GUC (see core.tenancy) stays scoped to that request
@@ -155,7 +157,8 @@ DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
 # --- Caching / Celery -------------------------------------------------------
 
-REDIS_URL = env("REDIS_URL", default="redis://localhost:6379/0")
+# 127.0.0.1 for the same reason as DB_HOST above.
+REDIS_URL = env("REDIS_URL", default="redis://127.0.0.1:6379/0")
 
 CACHES = {
     "default": {

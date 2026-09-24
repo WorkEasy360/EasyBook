@@ -1,5 +1,9 @@
 @import "tailwindcss";
 
+/* The dark: variant, for the rare case a token swap is not enough. Prefer the
+   [data-theme="dark"] block below: it flips every existing utility at once. */
+@custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *));
+
 /**
  * EasyBook design system — original tokens, not derived from any competitor's
  * visual identity.
@@ -9,9 +13,9 @@
  * MEANING (overdue, negative, unreconciled), so the chrome must not spend it
  * decoratively.
  *
- * Ships light only (spec §9). Every colour is declared as a semantic token
- * below rather than used raw in components, so adding dark mode later is a
- * matter of redeclaring this block under a selector, not editing features.
+ * Light and dark. Every colour is a token, so the dark theme is the one
+ * [data-theme="dark"] block further down — a redeclaration of these scales,
+ * not a per-feature edit. Spec §9 shipped light only; dark followed.
  */
 
 @theme {
@@ -41,6 +45,10 @@
   --color-ink-800: oklch(0.283 0.010 250);
   --color-ink-900: oklch(0.216 0.008 250);
   --color-ink-950: oklch(0.145 0.006 250);
+
+  /* Modal and drawer backdrop. A token of its own rather than ink-950/40, so
+     it stays a dark scrim when the neutral scale inverts. */
+  --color-scrim: oklch(0.145 0.006 250 / 0.4);
 
   /* --- Status. Chosen for contrast against white at small text sizes, and
      never used as the only signal for a state (spec §68). ---------------- */
@@ -126,12 +134,15 @@
 }
 
 /**
- * Semantic surface tokens. Components reference THESE, not the scales above,
- * which is what makes a future dark theme a change to one block.
+ * Semantic surface tokens, for CSS that cannot use a utility. They reference
+ * the scales (never a literal), so they follow the theme without their own
+ * dark block.
  */
 :root {
+  color-scheme: light;
+
   --surface-page: var(--color-ink-50);
-  --surface-raised: #ffffff;
+  --surface-raised: var(--color-white);
   --surface-sunken: var(--color-ink-100);
   --surface-inverse: var(--color-ink-900);
   --surface-hover: var(--color-ink-100);
@@ -145,13 +156,85 @@
   --text-primary: var(--color-ink-900);
   --text-secondary: var(--color-ink-600);
   --text-muted: var(--color-ink-500);
-  --text-inverse: #ffffff;
+  --text-inverse: var(--color-white);
   --text-link: var(--color-brand-700);
 
   /* Money that reduces the balance. Paired with a sign or parentheses so
      colour is never the only carrier (spec §68, §71). */
   --text-negative: var(--color-danger-600);
   --text-positive: var(--color-success-700);
+}
+
+/**
+ * Dark theme. Screen only: a printed invoice stays on paper.
+ *
+ * `data-theme` is stamped on <html> by the root layout from the eb_theme
+ * cookie, or by its inline script from the OS preference when nothing is
+ * stored (src/lib/theme.ts). Every scale is redeclared — not just the
+ * semantic tokens — because features use the raw utilities (bg-white,
+ * border-ink-200, text-brand-700) directly, and Tailwind emits those as
+ * var() references that resolve at runtime. The neutral scale runs the other
+ * way; brand and status lighten so text keeps its contrast on dark surfaces;
+ * and `white` becomes the raised surface, which is what makes
+ * `bg-brand-700 text-white` read as dark-on-light without any component
+ * knowing which theme it is in. Shadows are not redeclared: Tailwind inlines
+ * them into the utilities, so a runtime override would not reach them.
+ */
+@media screen {
+  [data-theme="dark"] {
+    color-scheme: dark;
+
+    --color-white: oklch(0.215 0.007 250);
+    --color-scrim: oklch(0 0 0 / 0.6);
+
+    --color-ink-50: oklch(0.17 0.006 250);
+    --color-ink-100: oklch(0.235 0.007 250);
+    --color-ink-200: oklch(0.3 0.008 250);
+    --color-ink-300: oklch(0.37 0.009 250);
+    --color-ink-400: oklch(0.53 0.011 250);
+    --color-ink-500: oklch(0.66 0.012 250);
+    --color-ink-600: oklch(0.74 0.011 250);
+    --color-ink-700: oklch(0.8 0.01 250);
+    --color-ink-800: oklch(0.87 0.008 250);
+    --color-ink-900: oklch(0.93 0.006 250);
+    --color-ink-950: oklch(0.975 0.004 250);
+
+    --color-brand-50: oklch(0.25 0.03 195);
+    --color-brand-100: oklch(0.3 0.045 195);
+    --color-brand-200: oklch(0.37 0.06 194);
+    --color-brand-300: oklch(0.46 0.075 193);
+    --color-brand-400: oklch(0.56 0.085 192);
+    --color-brand-500: oklch(0.64 0.092 191);
+    --color-brand-600: oklch(0.7 0.095 191);
+    --color-brand-700: oklch(0.76 0.09 192);
+    --color-brand-800: oklch(0.82 0.075 193);
+    --color-brand-900: oklch(0.88 0.055 195);
+    --color-brand-950: oklch(0.93 0.035 197);
+
+    --color-success-50: oklch(0.24 0.035 155);
+    --color-success-100: oklch(0.3 0.055 155);
+    --color-success-500: oklch(0.66 0.14 152);
+    --color-success-600: oklch(0.73 0.135 152);
+    --color-success-700: oklch(0.8 0.12 153);
+
+    --color-warning-50: oklch(0.25 0.04 80);
+    --color-warning-100: oklch(0.31 0.065 80);
+    --color-warning-500: oklch(0.76 0.145 72);
+    --color-warning-600: oklch(0.81 0.14 65);
+    --color-warning-700: oklch(0.86 0.12 60);
+
+    --color-danger-50: oklch(0.24 0.035 18);
+    --color-danger-100: oklch(0.3 0.055 18);
+    --color-danger-500: oklch(0.66 0.19 20);
+    --color-danger-600: oklch(0.72 0.175 22);
+    --color-danger-700: oklch(0.8 0.14 23);
+
+    --color-info-50: oklch(0.24 0.035 250);
+    --color-info-100: oklch(0.3 0.055 250);
+    --color-info-500: oklch(0.64 0.15 256);
+    --color-info-600: oklch(0.71 0.14 258);
+    --color-info-700: oklch(0.8 0.115 259);
+  }
 }
 
 @layer base {

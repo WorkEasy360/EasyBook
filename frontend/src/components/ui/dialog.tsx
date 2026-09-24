@@ -93,7 +93,7 @@ export function Dialog({
       }}
       className={cn(
         "m-auto w-[calc(100vw-2rem)] rounded-lg border border-ink-200 bg-white p-0 shadow-overlay",
-        "backdrop:bg-ink-950/40",
+        "backdrop:bg-scrim",
         SIZES[size],
       )}
     >
@@ -231,7 +231,7 @@ export function SidePanel({
       }}
       className={cn(
         "fixed inset-y-0 right-0 left-auto m-0 h-dvh max-h-dvh w-full rounded-none border-l border-ink-200 bg-white p-0 shadow-overlay",
-        "backdrop:bg-ink-950/40",
+        "backdrop:bg-scrim",
         width === "lg" ? "max-w-2xl" : "max-w-md",
       )}
     >

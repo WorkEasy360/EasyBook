@@ -113,7 +113,7 @@ export function AppShell({
           // A click on the <dialog> box itself (not its panel) is the backdrop.
           if (event.target === drawerRef.current) setDrawerOpen(false);
         }}
-        className="fixed inset-y-0 left-0 m-0 h-dvh max-h-dvh w-72 max-w-[85vw] border-r border-ink-200 bg-white p-0 backdrop:bg-ink-950/40 lg:hidden"
+        className="fixed inset-y-0 left-0 m-0 h-dvh max-h-dvh w-72 max-w-[85vw] border-r border-ink-200 bg-white p-0 backdrop:bg-scrim lg:hidden"
       >
         <div className="flex h-full flex-col">
           <div className="flex h-(--spacing-header) shrink-0 items-center justify-between border-b border-ink-200 px-3">

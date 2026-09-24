@@ -21,6 +21,14 @@ RUNNING LOCALLY
   If Postgres is genuinely down, the DB connect now fails in
   `DB_CONNECT_TIMEOUT_SECONDS` (default 10) with an `OperationalError`
   instead of hanging forever.
+- `DB_HOST` / `REDIS_URL` must use `127.0.0.1`, never `localhost`. On Windows
+  `localhost` resolves to `::1` first and Docker publishes 5472/6390 on IPv4
+  only, so every new connection stalls ~2.0s before falling back (measured:
+  `localhost:5472` 2.05s vs `127.0.0.1:5472` 0.007s). Django opens a fresh DB
+  connection per request (`CONN_MAX_AGE=0`) plus Redis for throttling and the
+  Celery broker, so `/api/v1/health/` took 12.2s and every page 12–25s
+  (0.045s after the fix). Restart `runserver` after editing `.env` — the
+  autoreloader watches `.py` files only.
 - `manage.py` defaults to `config.settings.dev`; tests use `config.settings.test` (`manage.py test --settings=config.settings.test`).
 - The Postgres role Django connects as (`easybook_app`, see `.env`) is deliberately NOT the superuser created by the official Postgres image — superusers always bypass Row Level Security. Never point `DB_USER` at the `easybook` superuser role.
 

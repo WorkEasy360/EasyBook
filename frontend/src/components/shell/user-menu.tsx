@@ -5,6 +5,7 @@ import Link from "next/link";
 import { cn } from "@/lib/cn";
 import { Icons } from "@/components/ui/icons";
 import { displayName, initialsOf, type User } from "@/types/api/accounts";
+import { ThemeToggle } from "./theme-toggle";
 
 /**
  * Account menu. A disclosure rather than an ARIA menu: the menu pattern
@@ -90,6 +91,11 @@ export function UserMenu({ user }: { user: User }) {
             <Icons.settings className="size-4 text-ink-500" />
             Settings
           </Link>
+
+          <div className="border-y border-ink-200 px-3 py-2">
+            <p className="mb-1.5 text-2xs font-medium tracking-wide text-ink-500 uppercase">Appearance</p>
+            <ThemeToggle />
+          </div>
 
           <button
             type="button"

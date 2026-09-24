@@ -125,6 +125,21 @@ unchanged.
   never fetch a signed download URL from the browser (connect-src 'self') —
   open it by navigation.
 
+## THEMING (light / dark / system)
+
+The choice is the `eb_theme` cookie (`src/lib/theme.ts`). The root layout
+stamps `data-theme` on `<html>` from it before any CSS loads; for "system" it
+renders the app's ONLY inline script, under the CSP nonce from `x-nonce`, to
+resolve the OS preference before first paint. `ThemeProvider` then follows
+changes; `ThemeToggle` lives in the account menu. Dark is a token swap in
+`globals.css`: every scale is redeclared under `[data-theme="dark"]` (neutrals
+inverted, brand/status lightened, `white` = the raised surface), so the raw
+utilities features already use flip without edits. Consequences: never
+hardcode a hex or reach for `dark:` where a token would carry it;
+`text-white` on a brand/status background is right in both themes; backdrops
+use `bg-scrim`, not `bg-ink-950/40`; shadows cannot be themed at runtime
+(Tailwind inlines them). Print is always light.
+
 ## SHARED BUILDING BLOCKS (use these; do not re-create)
 
 - Lists: `parseListQuery` + `FilterBar` + `DataTable` (Server Components,
