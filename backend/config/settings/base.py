@@ -29,6 +29,11 @@ INSTALLED_APPS = [
     "django.contrib.staticfiles",
     "django.contrib.postgres",
     "rest_framework",
+    # Makes refresh tokens revocable: BLACKLIST_AFTER_ROTATION and the logout
+    # endpoint (accounts.views.LogoutView) both write here. Without the app,
+    # SimpleJWT's blacklist() does not exist and rotation silently kept every
+    # old refresh token valid for its full lifetime.
+    "rest_framework_simplejwt.token_blacklist",
     "corsheaders",
     "core",
     "accounts",

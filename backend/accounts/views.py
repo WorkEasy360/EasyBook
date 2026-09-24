@@ -1,6 +1,8 @@
 from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from rest_framework.views import APIView
+from rest_framework_simplejwt.exceptions import TokenError
+from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework_simplejwt.views import TokenObtainPairView
 
 from accounts.models import Membership
@@ -16,6 +18,34 @@ from core.views import AuthenticatedAPIView, OrganizationScopedMixin
 
 class LoginView(TokenObtainPairView):
     throttle_scope = "auth"
+
+
+# A SimpleJWT refresh token is a few hundred bytes; anything far larger is not
+# one, and is not worth decoding.
+_MAX_REFRESH_TOKEN_LENGTH = 4096
+
+
+class LogoutView(APIView):
+    """Revokes the presented refresh token. Always 204.
+
+    The refresh token itself is the credential being retired, so no access
+    token is required (it has usually expired by the time a user signs out).
+    The response is identical whether the token was valid, expired, already
+    revoked or garbage — logout is idempotent and never reveals token state.
+    """
+
+    permission_classes = [AllowAny]
+    authentication_classes = []
+    throttle_scope = "auth"
+
+    def post(self, request):
+        raw = request.data.get("refresh") if isinstance(request.data, dict) else None
+        if isinstance(raw, str) and 0 < len(raw) <= _MAX_REFRESH_TOKEN_LENGTH:
+            try:
+                RefreshToken(raw).blacklist()
+            except TokenError:
+                pass  # invalid, expired or already blacklisted: nothing left to revoke
+        return Response(status=204)
 
 
 class RegisterView(APIView):

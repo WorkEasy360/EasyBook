@@ -26,13 +26,12 @@ export async function POST(request: Request): Promise<NextResponse> {
   const session = await readSession();
 
   if (session) {
-    // Best-effort server-side invalidation. backend/accounts/urls.py exposes
-    // no /auth/logout/ route, but SimpleJWT is configured with
-    // ROTATE_REFRESH_TOKENS + BLACKLIST_AFTER_ROTATION, so refreshing once
-    // and discarding the result blacklists the token we are about to drop —
-    // the closest available equivalent to a real logout.
+    // Server-side revocation: POST /auth/logout/ blacklists the refresh token
+    // (accounts.views.LogoutView). It always answers 204, so there is no
+    // outcome to branch on; a network failure still falls through to
+    // clearing the cookies below.
     await callUpstream({
-      path: "/auth/refresh/",
+      path: "/auth/logout/",
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ refresh: session.refresh }),
