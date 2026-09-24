@@ -63,6 +63,9 @@ MIDDLEWARE = [
     # (SecurityMiddleware): ALB and ECS probes carry neither the public Host
     # nor X-Forwarded-Proto. See core/middleware.py.
     "core.middleware.LivenessProbeMiddleware",
+    # Second: every later middleware (HTTPS redirect, CORS, CSRF, auth) then
+    # logs with the request's correlation id, and every response carries it.
+    "core.middleware.RequestIDMiddleware",
     "django.middleware.security.SecurityMiddleware",
     "corsheaders.middleware.CorsMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
@@ -71,7 +74,6 @@ MIDDLEWARE = [
     "django.contrib.auth.middleware.AuthenticationMiddleware",
     "django.contrib.messages.middleware.MessageMiddleware",
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
-    "core.middleware.RequestIDMiddleware",
     "core.middleware.SecurityHeadersMiddleware",
 ]
 
@@ -224,6 +226,10 @@ CELERY_TASK_ROUTES = {
 # occurrence. task_reject_on_worker_lost stays at its default (off): Celery
 # warns it can loop a poison message; work lost that way is picked up by the
 # recovery sweepers below instead.
+# Keep Django's LOGGING (JSON formatter + correlation filter) in workers.
+# Celery's default replaces the root logger's handlers with its own plain-text
+# format, which silently dropped every structured field in worker logs.
+CELERY_WORKER_HIJACK_ROOT_LOGGER = False
 CELERY_TASK_ACKS_LATE = True
 CELERY_WORKER_PREFETCH_MULTIPLIER = 1
 # With late acks, a lost broker connection otherwise redelivers tasks that are
@@ -401,8 +407,11 @@ LOGGING = {
     "formatters": {
         "json": {"()": "core.logging.JSONFormatter"},
     },
+    "filters": {
+        "request_context": {"()": "core.logging.RequestContextFilter"},
+    },
     "handlers": {
-        "console": {"class": "logging.StreamHandler", "formatter": "json"},
+        "console": {"class": "logging.StreamHandler", "formatter": "json", "filters": ["request_context"]},
     },
     "root": {"handlers": ["console"], "level": env("LOG_LEVEL", default="INFO")},
     "loggers": {

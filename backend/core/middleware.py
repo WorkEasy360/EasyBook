@@ -1,8 +1,12 @@
-import uuid
+import logging
+import time
 
 from django.http import JsonResponse
 
+from core.request_context import bind_request_id, reset_request_id, sanitize_request_id
 from core.tenancy import clear_tenant_context
+
+request_logger = logging.getLogger("easybook.request")
 
 LIVENESS_PATH = "/api/v1/health/live/"
 
@@ -42,23 +46,49 @@ _TENANT_CONTEXT_EXEMPT_VIEW_NAMES = frozenset({"liveness-check"})
 
 
 class RequestIDMiddleware:
-    """Attaches a request_id (from X-Request-ID or generated) for log correlation."""
+    """Binds the request's correlation id and logs one structured line per request.
+
+    The id is the caller's X-Request-ID only when it is well-formed (bounded
+    to the 64-character audit column, a conservative character set); anything
+    else — oversized, malformed, missing — is replaced by a generated UUID,
+    never echoed. It is bound into core.request_context for the logging filter
+    and for audit.services.record, and reset in `finally` together with the
+    tenant context, so nothing survives into the next request on this thread.
+    """
 
     def __init__(self, get_response):
         self.get_response = get_response
 
     def __call__(self, request):
-        request.request_id = request.headers.get("X-Request-ID") or str(uuid.uuid4())
+        request.request_id = sanitize_request_id(request.headers.get("X-Request-ID"))
+        token = bind_request_id(request.request_id)
+        started = time.monotonic()
+        response = None
         try:
             response = self.get_response(request)
+            response["X-Request-ID"] = request.request_id
+            return response
         finally:
+            # Logged before the tenant context is cleared, so the line carries
+            # the organization and user the request acted as.
+            request_logger.info(
+                "request_finished",
+                extra={
+                    "method": request.method,
+                    "path": request.path,
+                    "status": response.status_code if response is not None else 500,
+                    "duration_ms": round((time.monotonic() - started) * 1000, 1),
+                },
+            )
             # Contextvars persist per-thread across requests under some servers;
-            # always drop tenant scope once the response is built.
-            view_name = getattr(getattr(request, "resolver_match", None), "view_name", None)
-            if view_name not in _TENANT_CONTEXT_EXEMPT_VIEW_NAMES:
+            # drop tenant scope once the response is built. Tenant context is
+            # only ever set inside a view, so a request that never resolved
+            # one (refused earlier: unknown Host, HTTPS redirect) has nothing
+            # to clear — and must not open a database connection to clear it.
+            resolver_match = getattr(request, "resolver_match", None)
+            if resolver_match is not None and resolver_match.view_name not in _TENANT_CONTEXT_EXEMPT_VIEW_NAMES:
                 clear_tenant_context()
-        response["X-Request-ID"] = request.request_id
-        return response
+            reset_request_id(token)
 
 
 class SecurityHeadersMiddleware:
