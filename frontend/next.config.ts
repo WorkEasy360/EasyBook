@@ -18,6 +18,13 @@ const nextConfig: NextConfig = {
   allowedDevOrigins: ["127.0.0.1", "localhost"],
   poweredByHeader: false,
   /*
+   * Production runtime (frontend/Dockerfile): a self-contained Node server
+   * (`node server.js`) with only the traced dependencies. Every route here is
+   * server-rendered and the proxy/BFF need a Node runtime, so a static export
+   * is not an option.
+   */
+  output: "standalone",
+  /*
    * ON: typedRoutes makes a <Link> to a route that does not exist a BUILD
    * error — the "no broken routes" guarantee the production gate relies on
    * (spec §102). Dynamic hrefs built from strings are checked as `Route`

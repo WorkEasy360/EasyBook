@@ -1,0 +1,3 @@
+# Justified Trivy suppressions for frontend/Dockerfile's image. Each entry
+# needs: the finding id, why it is not exploitable here (or cannot be fixed
+# here), and a review condition/date. Empty: nothing is suppressed.

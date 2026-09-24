@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { resolveBffPath } from "@/lib/api/bff-path";
 import { callUpstream, decodeJson, type UpstreamResponse } from "@/lib/api/upstream";
 import { DEFAULT_TIMEOUT_MS, REPORT_TIMEOUT_MS } from "@/lib/api/config";
 import { refreshTokens } from "@/lib/auth/refresh";
@@ -77,22 +78,13 @@ function unauthorized(message: string): NextResponse {
 }
 
 /**
- * Rebuilds the Django path from the catch-all segments. Segments are already
- * URL-decoded by Next; anything that could escape the API prefix is rejected
- * rather than normalized, so a crafted path cannot address another host or
- * climb out of /api/v1.
+ * Rebuilds the Django path from the catch-all segments (src/lib/api/bff-path.ts).
+ * An unsafe path is refused before any session cookie is read, so no token is
+ * ever attached to it. The previous check rejected only literal "."/".." and
+ * separators, and let ".%2e" through — which URL parsing then turned into
+ * "..", reaching /admin/ with the user's bearer token.
  */
-function resolvePath(segments: string[]): string | null {
-  if (segments.length === 0) return null;
-  for (const segment of segments) {
-    if (segment === "" || segment === "." || segment === "..") return null;
-    if (segment.includes("/") || segment.includes("\\")) return null;
-  }
-  // Django's URLconf declares every route with a trailing slash and
-  // APPEND_SLASH cannot fix a POST, so the slash is added here rather than
-  // relied upon from the caller.
-  return `/${segments.join("/")}/`;
-}
+const resolvePath = resolveBffPath;
 
 function buildUpstreamHeaders(request: Request, accessToken: string, organizationId: string | null): Headers {
   const headers = new Headers();

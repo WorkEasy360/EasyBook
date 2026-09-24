@@ -1,6 +1,7 @@
 import "server-only";
 
 import { forwardedClientHeaders } from "@/lib/security/client-ip";
+import { containedUpstreamUrl } from "./bff-path";
 import { NetworkError, TimeoutError, toApiError } from "./errors";
 import { DEFAULT_TIMEOUT_MS, apiBaseUrl } from "./config";
 
@@ -44,10 +45,10 @@ export interface UpstreamResponse {
  * cannot silently 404 one transport while the other works.
  */
 function buildUrl(path: string, search?: string): string {
-  const leading = path.startsWith("/") ? path : `/${path}`;
-  const normalized = leading.endsWith("/") ? leading : `${leading}/`;
-  const url = `${apiBaseUrl()}${normalized}`;
-  return search ? `${url}?${search}` : url;
+  // Throws if the path would leave the API base once parsed (dot segments,
+  // encoded dots, another origin) — the second, independent containment
+  // check behind the BFF's own segment allowlist (./bff-path.ts).
+  return containedUpstreamUrl(apiBaseUrl(), path, search);
 }
 
 export async function callUpstream(request: UpstreamRequest): Promise<UpstreamResponse> {
