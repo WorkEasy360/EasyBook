@@ -191,9 +191,11 @@ use `bg-scrim`, not `bg-ink-950/40`; shadows cannot be themed at runtime
 
 ## BACKEND CONTRACT BLOCKERS (do not build UI on these)
 
-CRITICAL — no API creates a FiscalYear. Every posting (invoice, bill,
-journal, adjustment, payment) fails `fiscal_year_not_found` in a new
-organization. Dev tenant has one created via Django shell only.
+Fiscal years: RESOLVED. `POST accounting/fiscal-years/` creates one
+(idempotent on an identical range, 409 `fiscal_year_overlap`), and
+`GET accounting/fiscal-years/setup-status/` (any member) drives the required
+onboarding step: `requireSession()` redirects to `/onboarding/fiscal-year`
+while the active organization has no fiscal year covering today.
 
 Also missing: tax/compliance/audit REST APIs (tax rates, e-Invoice, e-Way
 Bill, audit trail — `blocked` in navigation.ts, test-enforced); organization

@@ -7,7 +7,7 @@ from accounting.models.journal import JournalEntry, JournalLine
 from accounting.services.accounts import create_account, update_account
 from accounting.services.journals import create_draft_journal, replace_draft_lines
 from accounting.services.posting import reverse_journal
-from accounts.models import Currency
+from accounts.models import Currency, FiscalYear
 
 
 class AccountSerializer(serializers.ModelSerializer):
@@ -111,3 +111,15 @@ class JournalEntryReverseSerializer(serializers.Serializer):
             posting_date=self.validated_data.get("posting_date"),
             memo=self.validated_data.get("memo", ""),
         )
+
+
+class FiscalYearSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = FiscalYear
+        fields = ["id", "start_date", "end_date", "is_closed", "created_at"]
+        read_only_fields = fields
+
+
+class FiscalYearCreateSerializer(serializers.Serializer):
+    start_date = serializers.DateField()
+    end_date = serializers.DateField()

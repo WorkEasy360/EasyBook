@@ -207,3 +207,28 @@ export interface TrialBalance {
 export function isDebitNormal(type: AccountType): boolean {
   return type === "asset" || type === "expense";
 }
+
+/** accounting.FiscalYearSerializer — read-only; created via FiscalYearCreateSerializer. */
+export interface FiscalYear {
+  id: UUID;
+  start_date: DateString;
+  end_date: DateString;
+  is_closed: boolean;
+  created_at: DateTimeString;
+}
+
+/** POST accounting/fiscal-years/ — 201 created, 200 when the identical range already exists. */
+export interface FiscalYearCreateInput {
+  start_date: DateString;
+  end_date: DateString;
+}
+
+/** GET accounting/fiscal-years/setup-status/ — open to every member of the organization. */
+export interface FiscalYearSetupStatus {
+  has_current_fiscal_year: boolean;
+  current: FiscalYear | null;
+  /** 1–12, the organization's configured start month. */
+  fiscal_year_start_month: number;
+  /** Whether the caller may create a fiscal year (accounting.manage). */
+  can_manage: boolean;
+}

@@ -23,12 +23,9 @@ import { isValidTimeZone } from "./time-zone";
  *
  * After creation the new organization is selected through the same
  * /api/auth/organization route the switcher uses (it verifies membership
- * before writing the cookie), then a FULL navigation loads /dashboard so no
- * state from the organization-less session survives.
- *
- * No fiscal year is created with the organization, and none can be created
- * from the app (BACKEND CONTRACT BLOCKER: a fiscal-year create endpoint), so
- * the form says plainly that posting will not work yet.
+ * before writing the cookie), then a FULL navigation continues to the
+ * required fiscal-year step (/onboarding/fiscal-year) so no state from the
+ * organization-less session survives.
  */
 
 const schema = z.object({
@@ -115,7 +112,7 @@ export function OrganizationForm() {
     // A full navigation, not router.push: the organization cookie just
     // changed, and nothing rendered for the previous state may be reused.
     // eslint-disable-next-line @next/next/no-location-assign-relative-destination -- the hard navigation is the point
-    window.location.assign("/dashboard");
+    window.location.assign("/onboarding/fiscal-year");
   }
 
   async function onSubmit(values: Values) {
@@ -211,10 +208,7 @@ export function OrganizationForm() {
         </FormField>
       </div>
 
-      <p role="note" className="rounded-md border border-warning-100 bg-warning-50 px-3 py-2 text-sm text-warning-700">
-        Fiscal years cannot be set up in the app yet. Until one exists for the organization, invoices, bills, payments
-        and journals can be saved as drafts but not posted.
-      </p>
+      <p className="text-sm text-ink-500">Next, you will confirm the dates of your current fiscal year.</p>
 
       <Button type="submit" variant="primary" fullWidth loading={isSubmitting} loadingLabel="Creating">
         Create organization

@@ -5,6 +5,7 @@ import { redirect } from "next/navigation";
 import { callUpstream, decodeJson } from "@/lib/api/upstream";
 import { readSession } from "./session";
 import type { Organization, User } from "@/types/api/accounts";
+import type { FiscalYearSetupStatus } from "@/types/api/accounting";
 import type { Role } from "@/lib/authz/permissions";
 
 /**
@@ -32,10 +33,14 @@ export interface SessionContext {
  */
 const SESSION_REJECTED = Symbol("session-rejected");
 
-async function fetchJson<T>(path: string, accessToken: string): Promise<T | null | typeof SESSION_REJECTED> {
+async function fetchJson<T>(
+  path: string,
+  accessToken: string,
+  extraHeaders: Record<string, string> = {},
+): Promise<T | null | typeof SESSION_REJECTED> {
   const response = await callUpstream({
     path,
-    headers: { Authorization: `Bearer ${accessToken}`, Accept: "application/json" },
+    headers: { Authorization: `Bearer ${accessToken}`, Accept: "application/json", ...extraHeaders },
     cache: "no-store",
   });
   if (response.status === 401) return SESSION_REJECTED;
@@ -78,6 +83,20 @@ export const requireSession = cache(async (): Promise<SessionContext> => {
     organizations[0];
 
   if (!active) redirect("/onboarding/organization");
+
+  // Fiscal-year setup is a required onboarding step: without a fiscal year
+  // covering today, every posting fails with fiscal_year_not_found, so no
+  // accounting screen is usable. Checked on every authenticated render (one
+  // small org-scoped call, deduped by cache()), so it also catches the day a
+  // fiscal year ends and the next one has not been created yet.
+  const setup = await fetchJson<FiscalYearSetupStatus>("/accounting/fiscal-years/setup-status/", session.access, {
+    "X-Organization-Id": active.id,
+  });
+  if (setup === SESSION_REJECTED) redirect("/login?reason=expired");
+  if (!setup) {
+    throw new Error("EasyBook could not load your organization. Please try again in a moment.");
+  }
+  if (!setup.has_current_fiscal_year) redirect("/onboarding/fiscal-year");
 
   return {
     user,
