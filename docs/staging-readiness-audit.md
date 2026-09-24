@@ -232,3 +232,35 @@ vulnerabilities. Still no git remote.
 
 **Verdict unchanged: NO-GO.** Nine P0s open, of which B1, B2, B6, B7, B8 are
 mechanical and B3, B4, B5, B9 need a decision first.
+
+---
+
+## Remediation — 2026-09-24 (uncommitted on `p0-remediation` at time of writing)
+
+Every open P0 was reproduced first (a failing test, or a runtime probe
+against the built images), then fixed and gated. Verified locally with
+production images behind a TLS proxy: 38/38 end-to-end HTTPS checks.
+
+| # | Status | Fix | Proof |
+|---|--------|-----|-------|
+| B1 | closed | `accounting.services.fiscal.create_fiscal_year` (atomic, advisory-locked, idempotent, overlap-refusing, audited); `POST accounting/fiscal-years/`, `GET …/setup-status/`; required `/onboarding/fiscal-year` step gated in `requireSession()` | `accounting/tests/test_fiscal_year_setup.py` (fresh signup → org → fiscal year → first journal posted; concurrency; tenancy; RBAC) |
+| B2 | closed | `token_blacklist` installed; `POST auth/logout/` (always 204); BFF logout calls it | `accounts/tests/test_token_revocation.py`; `frontend/src/app/api/auth/logout/route.test.ts` |
+| B3 | closed | one-off `db-bootstrap` task (`backend/ops/db_bootstrap.py`, own execution role, only reader of the master secret) and `migrate` task (`db_preflight && migrate`); every API/worker/beat process refuses a superuser/BYPASSRLS role | `ops/tests/test_db_bootstrap.py` (real server), `core/tests/test_db_preflight.py`, `tests/db_bootstrap.tftest.hcl`, `runbooks/database-bootstrap.md` |
+| B4 | closed (pending first CI run) | `publish` jobs push exact-SHA images to IMMUTABLE ECR repos via GitHub OIDC (`github_oidc.tf`: main-only, push-only); deploy role defined but off | `tests/github_oidc.tftest.hcl` |
+| B5 | closed | HTTPS mandatory: `domain_name` + `acm_certificate_arn` required and validated; :80 only redirects; Django hosts/origins derive from the hostname and are validated strictly | `tests/hostname.tftest.hcl`, `config/tests/test_production_settings.py` |
+| B6 | closed | formatter keeps `extra` fields (secrets redacted by key); contextvar request/task correlation; JSON logs in Celery workers | `core/tests/test_request_correlation.py` |
+| B7 | closed | `X-Request-ID` accepted only if `[A-Za-z0-9._:-]{1,64}`, else replaced; audit rows now carry the request id | same |
+| B8 | closed | `replace_draft_lines` locks and re-reads the journal; DB triggers refuse any line change on a non-draft journal and any non-draft journal that does not balance | `accounting/tests/test_journal_immutability.py` (stale copy, real-thread races, every write path) |
+| B9 | closed | `frontend/Dockerfile` (standalone, non-root, pinned base), start-up config preflight, `/api/health`; ECS `web` service behind the ALB | frontend CI `container` job; local container runs |
+| P1 BFF bypass | closed | segment allowlist + containment re-check of the final upstream URL | `bff-path.test.ts`, BFF `route.test.ts` |
+
+Found and fixed during remediation: the old code also **deadlocks** under the
+real replace-vs-post race; Celery **swallows** exceptions from signal
+handlers (a worker would have kept running as a superuser — it now exits);
+the WAF per-IP rule would have throttled all users' API traffic arriving via
+the NAT gateways (NAT egress is now exempt; Django throttles per real client).
+
+**Still required for GO:** the changes committed and every workflow green on
+GitHub (Trivy has not yet run on either image); an EasyBook AWS identity; the
+staging hostname and its issued ACM certificate; a first `apply`, bootstrap,
+migrate and live HTTPS verification.
