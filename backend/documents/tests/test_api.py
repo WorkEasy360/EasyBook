@@ -3,6 +3,7 @@ OCR/review/link endpoints."""
 
 from unittest.mock import patch
 
+from django.test import override_settings
 from rest_framework.test import APIClient
 
 from accounts.models import Membership
@@ -79,6 +80,42 @@ class UploadEndpointTests(DocumentsApiTestsBase):
         )
         self.assertEqual(response.status_code, 400)
         self.assertEqual(response.data["error"]["code"], "unsupported_file_type")
+
+    @override_settings(DOCUMENT_MAX_UPLOAD_SIZES={"default": 10, "image": 10, "pdf": 10})
+    def test_upload_rejects_oversized_file(self):
+        from django.core.files.uploadedfile import SimpleUploadedFile
+
+        response = self.client.post(
+            "/api/v1/documents/upload/",
+            {"file": SimpleUploadedFile("receipt.pdf", PDF_BYTES, content_type="application/pdf")},
+            format="multipart", **self._headers(),
+        )
+        self.assertEqual(response.status_code, 400, response.data)
+        self.assertEqual(response.data["error"]["code"], "file_too_large")
+
+    @override_settings(DOCUMENT_MAX_UPLOAD_SIZES={"default": 10, "image": 10, "pdf": 10})
+    def test_oversized_upload_never_reaches_the_read_call(self):
+        """DocumentUploadView.post checks UploadedFile.size against
+        max_upload_size() BEFORE the `content=uploaded.read()` call that
+        passes to upload_document() — an oversized upload must be rejected
+        without ever being pulled fully into memory. Proven, not just
+        asserted: upload_document is the only place .read() is invoked in
+        this view, and only as an inline argument to this exact call, so if
+        it's never reached, .read() provably never ran either. Patching
+        UploadedFile.read directly doesn't work here — the test client's own
+        multipart encoding must read the file first to build the outgoing
+        request, which isn't the code path this test cares about."""
+        from django.core.files.uploadedfile import SimpleUploadedFile
+
+        with patch("documents.api.views.upload_document") as mock_upload:
+            response = self.client.post(
+                "/api/v1/documents/upload/",
+                {"file": SimpleUploadedFile("receipt.pdf", PDF_BYTES, content_type="application/pdf")},
+                format="multipart", **self._headers(),
+            )
+        mock_upload.assert_not_called()
+        self.assertEqual(response.status_code, 400, response.data)
+        self.assertEqual(response.data["error"]["code"], "file_too_large")
 
     def test_staff_can_upload_but_viewer_cannot(self):
         staff_client = self._as_role(Role.STAFF, "staff@example.com")
@@ -165,7 +202,8 @@ class OcrAndReviewEndpointTests(DocumentsApiTestsBase):
         fake_result = ExtractionResult(provider="fake", provider_version="1", raw_text="hi", confidence=0.95)
         with patch("documents.services.ocr.get_provider") as mock_provider:
             mock_provider.return_value.extract.return_value = fake_result
-            queued = self.client.post(f"/api/v1/documents/{doc_id}/ocr/", **self._headers())
+            with self.captureOnCommitCallbacks(execute=True):
+                queued = self.client.post(f"/api/v1/documents/{doc_id}/ocr/", **self._headers())
         self.assertEqual(queued.status_code, 202)
 
         result = self.client.get(f"/api/v1/documents/{doc_id}/ocr/", **self._headers())
@@ -185,7 +223,8 @@ class OcrAndReviewEndpointTests(DocumentsApiTestsBase):
             mock_provider.return_value.extract.return_value = ExtractionResult(
                 provider="fake", provider_version="1", raw_text="hi", confidence=0.2
             )
-            self.client.post(f"/api/v1/documents/{doc_id}/ocr/", **self._headers())
+            with self.captureOnCommitCallbacks(execute=True):
+                self.client.post(f"/api/v1/documents/{doc_id}/ocr/", **self._headers())
 
         staff_client = self._as_role(Role.STAFF, "staff-review@example.com")
         response = staff_client.post(

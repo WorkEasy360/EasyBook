@@ -1,0 +1,351 @@
+@import "tailwindcss";
+
+/* The dark: variant, for the rare case a token swap is not enough. Prefer the
+   [data-theme="dark"] block below: it flips every existing utility at once. */
+@custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *));
+
+/**
+ * EasyBook design system — original tokens, not derived from any competitor's
+ * visual identity.
+ *
+ * Direction (spec §10): professional, calm, dense where density helps. The
+ * accent is deliberately restrained — in an accounting product colour carries
+ * MEANING (overdue, negative, unreconciled), so the chrome must not spend it
+ * decoratively.
+ *
+ * Light and dark. Every colour is a token, so the dark theme is the one
+ * [data-theme="dark"] block further down — a redeclaration of these scales,
+ * not a per-feature edit. Spec §9 shipped light only; dark followed.
+ */
+
+@theme {
+  /* --- Brand: deep slate-teal. Reads as financial without reading as any
+     particular incumbent's blue or green. ------------------------------- */
+  --color-brand-50: oklch(0.971 0.017 195);
+  --color-brand-100: oklch(0.938 0.035 195);
+  --color-brand-200: oklch(0.885 0.063 194);
+  --color-brand-300: oklch(0.812 0.089 193);
+  --color-brand-400: oklch(0.715 0.098 192);
+  --color-brand-500: oklch(0.618 0.094 191);
+  --color-brand-600: oklch(0.524 0.082 191);
+  --color-brand-700: oklch(0.438 0.068 192);
+  --color-brand-800: oklch(0.366 0.054 193);
+  --color-brand-900: oklch(0.312 0.043 195);
+  --color-brand-950: oklch(0.218 0.032 197);
+
+  /* --- Neutrals: slightly cool, so large table surfaces do not look beige. */
+  --color-ink-50: oklch(0.985 0.002 250);
+  --color-ink-100: oklch(0.968 0.003 250);
+  --color-ink-200: oklch(0.925 0.005 250);
+  --color-ink-300: oklch(0.868 0.007 250);
+  --color-ink-400: oklch(0.708 0.011 250);
+  --color-ink-500: oklch(0.567 0.013 250);
+  --color-ink-600: oklch(0.452 0.013 250);
+  --color-ink-700: oklch(0.375 0.012 250);
+  --color-ink-800: oklch(0.283 0.010 250);
+  --color-ink-900: oklch(0.216 0.008 250);
+  --color-ink-950: oklch(0.145 0.006 250);
+
+  /* Modal and drawer backdrop. A token of its own rather than ink-950/40, so
+     it stays a dark scrim when the neutral scale inverts. */
+  --color-scrim: oklch(0.145 0.006 250 / 0.4);
+
+  /* --- Status. Chosen for contrast against white at small text sizes, and
+     never used as the only signal for a state (spec §68). ---------------- */
+  --color-success-50: oklch(0.972 0.026 155);
+  --color-success-100: oklch(0.938 0.052 155);
+  --color-success-500: oklch(0.618 0.145 152);
+  --color-success-600: oklch(0.538 0.132 152);
+  --color-success-700: oklch(0.456 0.112 153);
+
+  --color-warning-50: oklch(0.977 0.035 85);
+  --color-warning-100: oklch(0.945 0.076 85);
+  --color-warning-500: oklch(0.742 0.152 72);
+  --color-warning-600: oklch(0.658 0.148 60);
+  --color-warning-700: oklch(0.552 0.128 52);
+
+  --color-danger-50: oklch(0.971 0.019 18);
+  --color-danger-100: oklch(0.936 0.038 18);
+  --color-danger-500: oklch(0.612 0.201 20);
+  --color-danger-600: oklch(0.542 0.193 22);
+  --color-danger-700: oklch(0.462 0.168 23);
+
+  --color-info-50: oklch(0.972 0.019 250);
+  --color-info-100: oklch(0.936 0.041 250);
+  --color-info-500: oklch(0.588 0.152 256);
+  --color-info-600: oklch(0.512 0.156 258);
+  --color-info-700: oklch(0.438 0.142 259);
+
+  /* --- Typography. A system stack keeps first paint free of a font request;
+     the numeric stack is what actually matters here. --------------------- */
+  --font-sans:
+    ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue",
+    Arial, "Noto Sans", sans-serif;
+  --font-mono:
+    ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+
+  --text-2xs: 0.6875rem;
+  --text-2xs--line-height: 1rem;
+
+  /* --- Radius: small. Large rounding reads as consumer, not ledger. ----- */
+  --radius-xs: 0.1875rem;
+  --radius-sm: 0.25rem;
+  --radius-md: 0.375rem;
+  --radius-lg: 0.5rem;
+  --radius-xl: 0.75rem;
+
+  /* --- Elevation: low and tight. Panels are separated by borders first,
+     shadow second (spec §10: no decorative depth). ----------------------- */
+  --shadow-xs: 0 1px 2px 0 rgb(16 24 40 / 0.04);
+  --shadow-sm: 0 1px 3px 0 rgb(16 24 40 / 0.08), 0 1px 2px -1px rgb(16 24 40 / 0.04);
+  --shadow-md: 0 4px 8px -2px rgb(16 24 40 / 0.08), 0 2px 4px -2px rgb(16 24 40 / 0.04);
+  --shadow-lg: 0 12px 16px -4px rgb(16 24 40 / 0.08), 0 4px 6px -2px rgb(16 24 40 / 0.03);
+  --shadow-overlay: 0 20px 24px -4px rgb(16 24 40 / 0.1), 0 8px 8px -4px rgb(16 24 40 / 0.04);
+
+  /* --- Motion: brief. Long animation in a data tool is friction. -------- */
+  --ease-out-quint: cubic-bezier(0.22, 1, 0.36, 1);
+  --animate-fade-in: fade-in 120ms var(--ease-out-quint);
+  --animate-slide-up: slide-up 160ms var(--ease-out-quint);
+
+  /* --- Layout rhythm. -------------------------------------------------- */
+  --spacing-sidebar: 16rem;
+  --spacing-sidebar-collapsed: 4rem;
+  --spacing-header: 3.5rem;
+}
+
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes slide-up {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/**
+ * Semantic surface tokens, for CSS that cannot use a utility. They reference
+ * the scales (never a literal), so they follow the theme without their own
+ * dark block.
+ */
+:root {
+  color-scheme: light;
+
+  --surface-page: var(--color-ink-50);
+  --surface-raised: var(--color-white);
+  --surface-sunken: var(--color-ink-100);
+  --surface-inverse: var(--color-ink-900);
+  --surface-hover: var(--color-ink-100);
+  --surface-selected: var(--color-brand-50);
+
+  --border-subtle: var(--color-ink-200);
+  --border-default: var(--color-ink-300);
+  --border-strong: var(--color-ink-400);
+  --border-focus: var(--color-brand-600);
+
+  --text-primary: var(--color-ink-900);
+  --text-secondary: var(--color-ink-600);
+  --text-muted: var(--color-ink-500);
+  --text-inverse: var(--color-white);
+  --text-link: var(--color-brand-700);
+
+  /* Money that reduces the balance. Paired with a sign or parentheses so
+     colour is never the only carrier (spec §68, §71). */
+  --text-negative: var(--color-danger-600);
+  --text-positive: var(--color-success-700);
+}
+
+/**
+ * Dark theme. Screen only: a printed invoice stays on paper.
+ *
+ * `data-theme` is stamped on <html> by the root layout from the eb_theme
+ * cookie, or by its inline script from the OS preference when nothing is
+ * stored (src/lib/theme.ts). Every scale is redeclared — not just the
+ * semantic tokens — because features use the raw utilities (bg-white,
+ * border-ink-200, text-brand-700) directly, and Tailwind emits those as
+ * var() references that resolve at runtime. The neutral scale runs the other
+ * way; brand and status lighten so text keeps its contrast on dark surfaces;
+ * and `white` becomes the raised surface, which is what makes
+ * `bg-brand-700 text-white` read as dark-on-light without any component
+ * knowing which theme it is in. Shadows are not redeclared: Tailwind inlines
+ * them into the utilities, so a runtime override would not reach them.
+ */
+@media screen {
+  [data-theme="dark"] {
+    color-scheme: dark;
+
+    --color-white: oklch(0.215 0.007 250);
+    --color-scrim: oklch(0 0 0 / 0.6);
+
+    --color-ink-50: oklch(0.17 0.006 250);
+    --color-ink-100: oklch(0.235 0.007 250);
+    --color-ink-200: oklch(0.3 0.008 250);
+    --color-ink-300: oklch(0.37 0.009 250);
+    --color-ink-400: oklch(0.53 0.011 250);
+    --color-ink-500: oklch(0.66 0.012 250);
+    --color-ink-600: oklch(0.74 0.011 250);
+    --color-ink-700: oklch(0.8 0.01 250);
+    --color-ink-800: oklch(0.87 0.008 250);
+    --color-ink-900: oklch(0.93 0.006 250);
+    --color-ink-950: oklch(0.975 0.004 250);
+
+    --color-brand-50: oklch(0.25 0.03 195);
+    --color-brand-100: oklch(0.3 0.045 195);
+    --color-brand-200: oklch(0.37 0.06 194);
+    --color-brand-300: oklch(0.46 0.075 193);
+    --color-brand-400: oklch(0.56 0.085 192);
+    --color-brand-500: oklch(0.64 0.092 191);
+    --color-brand-600: oklch(0.7 0.095 191);
+    --color-brand-700: oklch(0.76 0.09 192);
+    --color-brand-800: oklch(0.82 0.075 193);
+    --color-brand-900: oklch(0.88 0.055 195);
+    --color-brand-950: oklch(0.93 0.035 197);
+
+    --color-success-50: oklch(0.24 0.035 155);
+    --color-success-100: oklch(0.3 0.055 155);
+    --color-success-500: oklch(0.66 0.14 152);
+    --color-success-600: oklch(0.73 0.135 152);
+    --color-success-700: oklch(0.8 0.12 153);
+
+    --color-warning-50: oklch(0.25 0.04 80);
+    --color-warning-100: oklch(0.31 0.065 80);
+    --color-warning-500: oklch(0.76 0.145 72);
+    --color-warning-600: oklch(0.81 0.14 65);
+    --color-warning-700: oklch(0.86 0.12 60);
+
+    --color-danger-50: oklch(0.24 0.035 18);
+    --color-danger-100: oklch(0.3 0.055 18);
+    --color-danger-500: oklch(0.66 0.19 20);
+    --color-danger-600: oklch(0.72 0.175 22);
+    --color-danger-700: oklch(0.8 0.14 23);
+
+    --color-info-50: oklch(0.24 0.035 250);
+    --color-info-100: oklch(0.3 0.055 250);
+    --color-info-500: oklch(0.64 0.15 256);
+    --color-info-600: oklch(0.71 0.14 258);
+    --color-info-700: oklch(0.8 0.115 259);
+  }
+}
+
+@layer base {
+  * {
+    border-color: var(--border-subtle);
+  }
+
+  html {
+    -webkit-text-size-adjust: 100%;
+  }
+
+  body {
+    background-color: var(--surface-page);
+    color: var(--text-primary);
+    font-family: var(--font-sans);
+    font-feature-settings: "cv02", "cv03", "cv04";
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /*
+   * Figures line up in columns. Without tabular numerals a ledger column is
+   * ragged and genuinely harder to scan — this is the single highest-value
+   * typographic rule in the whole system.
+   */
+  .tabular,
+  td.numeric,
+  th.numeric,
+  input[type="number"],
+  [data-numeric] {
+    font-variant-numeric: tabular-nums;
+    font-feature-settings: "tnum";
+  }
+
+  /*
+   * A visible focus ring on every interactive element. :focus-visible keeps
+   * it off mouse clicks while guaranteeing it for keyboard users (spec §68).
+   */
+  :focus-visible {
+    outline: 2px solid var(--border-focus);
+    outline-offset: 2px;
+    border-radius: var(--radius-sm);
+  }
+
+  [hidden] {
+    display: none !important;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+      scroll-behavior: auto !important;
+    }
+  }
+}
+
+@layer components {
+  /* Skip link: first tab stop on every page, visible only when focused. */
+  .skip-link {
+    position: absolute;
+    left: -9999px;
+    z-index: 100;
+  }
+
+  .skip-link:focus {
+    left: 1rem;
+    top: 1rem;
+    padding: 0.5rem 0.875rem;
+    background: var(--surface-raised);
+    border: 1px solid var(--border-default);
+    border-radius: var(--radius-md);
+    box-shadow: var(--shadow-md);
+  }
+
+  /* Screen-reader-only text that still becomes visible on focus. */
+  .sr-only-focusable:not(:focus):not(:focus-within) {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+    border-width: 0;
+  }
+}
+
+/**
+ * Print: documents (invoice, quote, PO) get a clean paper rendering with the
+ * app chrome removed (spec §86).
+ */
+@media print {
+  [data-print="hide"] {
+    display: none !important;
+  }
+
+  body {
+    background: #ffffff;
+  }
+
+  .print-document {
+    box-shadow: none;
+    border: none;
+    padding: 0;
+  }
+
+  a[href]::after {
+    content: "";
+  }
+}

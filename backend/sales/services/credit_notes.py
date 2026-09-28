@@ -5,6 +5,7 @@ from django.db import transaction
 from django.utils import timezone
 
 from accounting.models.account import AccountType
+from accounting.services.currency import assert_base_currency
 from accounting.services.posting import reverse_journal
 from accounts.services import allocate_sequence_number
 from audit.models import AuditLog
@@ -139,6 +140,7 @@ def create_credit_note(
         raise ApplicationError("A credit note needs at least one line.", code="credit_note_no_lines")
 
     currency = currency or (source_invoice.currency if source_invoice else customer.currency)
+    assert_base_currency(organization=organization, currency=currency, exchange_rate=exchange_rate)
 
     # A credit note against an invoice inherits that invoice's GST treatment
     # rather than re-determining it. Crediting a supply under a different
@@ -410,7 +412,8 @@ def issue_credit_note(*, credit_note_id, organization, actor=None) -> CreditNote
 @transaction.atomic
 def void_credit_note(*, credit_note_id, organization, actor=None) -> CreditNote:
     """Reverses an ISSUED credit note's accounting AND any restock it
-    performed — never touching the original invoice."""
+    performed. The original invoice's lines and journal are never touched; only
+    its derived settlement status is recalculated."""
     credit_note = _get_credit_note_for_update(credit_note_id=credit_note_id, organization=organization)
 
     if credit_note.status == CreditNoteStatus.VOID:
@@ -451,6 +454,17 @@ def void_credit_note(*, credit_note_id, organization, actor=None) -> CreditNote:
     credit_note.voided_by = actor
     credit_note.voided_at = timezone.now()
     credit_note.save(update_fields=["status", "voided_by", "voided_at", "updated_at"])
+
+    # The credit no longer counts against the invoice
+    # (get_invoice_amount_credited sums ISSUED notes only), so its settlement
+    # status has to be derived again — a fully credited invoice is not paid
+    # once the credit is gone.
+    if credit_note.source_invoice_id:
+        from sales.models.invoice import Invoice
+        from sales.services.invoices import refresh_invoice_payment_status
+
+        source_invoice = Invoice.objects.select_for_update().get(pk=credit_note.source_invoice_id)
+        refresh_invoice_payment_status(invoice=source_invoice, actor=actor)
 
     record_audit(
         organization_id=organization.id,

@@ -115,7 +115,13 @@ class ProfitAndLossTests(TestCase):
                 created_by=self.user,
             )
             posted = post_journal(journal_id=journal.id, organization=self.org, actor=self.user)
-            reverse_journal(journal_id=posted.id, organization=self.org, actor=self.user)
+            # Explicit date: defaulting to "today" put the reversal outside
+            # this window, which is how this test used to pass while the
+            # selector dropped the reversed original instead of netting it.
+            reverse_journal(
+                journal_id=posted.id, organization=self.org, actor=self.user,
+                posting_date=datetime.date(2026, 4, 12),
+            )
 
             result = get_profit_and_loss(
                 organization=self.org,
@@ -124,6 +130,36 @@ class ProfitAndLossTests(TestCase):
             )
         # The 200 posted + the 200 reversal cancel out; original 1000 stands.
         self.assertEqual(result["totals"]["revenue"], Decimal("1000"))
+
+    def test_later_period_reversal_keeps_original_period_and_nets_over_both(self):
+        from accounting.services.posting import reverse_journal
+
+        with tenant_context(organization_id=self.org.id):
+            journal = create_draft_journal(
+                organization=self.org,
+                posting_date="2026-04-10",
+                currency=self.currency,
+                lines=[
+                    {"account_id": self.cash.id, "debit": Decimal("200")},
+                    {"account_id": self.revenue.id, "credit": Decimal("200")},
+                ],
+                created_by=self.user,
+            )
+            posted = post_journal(journal_id=journal.id, organization=self.org, actor=self.user)
+            reverse_journal(
+                journal_id=posted.id, organization=self.org, actor=self.user,
+                posting_date=datetime.date(2026, 5, 10),
+            )
+            april = get_profit_and_loss(
+                organization=self.org, from_date=datetime.date(2026, 4, 1), to_date=datetime.date(2026, 4, 30)
+            )
+            april_and_may = get_profit_and_loss(
+                organization=self.org, from_date=datetime.date(2026, 4, 1), to_date=datetime.date(2026, 5, 31)
+            )
+        # April already reported the 200; a May reversal must not rewrite it.
+        self.assertEqual(april["totals"]["revenue"], Decimal("1200"))
+        # 1000 + 200 - 200 + 999 (the May journal from setUp).
+        self.assertEqual(april_and_may["totals"]["revenue"], Decimal("1999"))
 
     def test_comparison_period_and_variance(self):
         with tenant_context(organization_id=self.org.id):

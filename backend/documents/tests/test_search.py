@@ -47,7 +47,8 @@ class SearchDocumentsTests(DocumentsTestsBase):
             )
             with patch("documents.services.ocr.get_provider") as mock_provider:
                 mock_provider.return_value.extract.return_value = fake_result
-                request_ocr(document=document)
+                with self.captureOnCommitCallbacks(execute=True):
+                    request_ocr(document=document)
             results = list(search_documents(query="GSTIN"))
         self.assertEqual(len(results), 1)
 

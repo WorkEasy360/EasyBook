@@ -1,3 +1,6 @@
+import uuid
+
+from django.db import transaction
 from rest_framework import generics
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -17,10 +20,18 @@ from automation.models.execution import AutomationExecution
 from automation.models.rule import AutomationRule, RuleStatus
 from automation.services.execution import create_manual_execution, retry_execution
 from automation.services.rules import activate_rule, archive_rule, pause_rule
+from automation.triggers.facts import trigger_requires_entity
 from automation.triggers.registry import all_triggers
 from core.exceptions import ApplicationError
 from core.views import OrganizationScopedMixin
 
+
+def _is_uuid(value: str) -> bool:
+    try:
+        uuid.UUID(str(value))
+    except (ValueError, TypeError, AttributeError):
+        return False
+    return True
 
 class AutomationRuleListCreateView(OrganizationScopedMixin, generics.ListCreateAPIView):
     permission_classes = [HasOrgPermission]
@@ -100,8 +111,10 @@ class AutomationRuleArchiveView(_AutomationRuleTransitionView):
 
 class AutomationRuleRunView(OrganizationScopedMixin, APIView):
     """Manual trigger (phase section 8). Enqueues execution rather than
-    running it inline in the request thread (phase section 13) — under
-    CELERY_TASK_ALWAYS_EAGER (tests only) this still completes synchronously."""
+    running it inline in the request thread (phase section 13), and only once
+    the request's transaction commits: enqueued earlier, a worker can pick the
+    message up before the execution row is visible, skip it as not found, and
+    leave it PENDING forever. The response therefore reports it PENDING."""
 
     permission_classes = [HasOrgPermission]
     required_permission = Permission.RUN_AUTOMATION
@@ -115,8 +128,19 @@ class AutomationRuleRunView(OrganizationScopedMixin, APIView):
         if rule.status != RuleStatus.ACTIVE:
             raise ApplicationError("Only an ACTIVE rule can be run manually.", code="automation_rule_not_active")
 
-        execution = create_manual_execution(rule=rule, actor=request.user)
+        # Validated BEFORE the execution exists. A record-based trigger run
+        # without a usable entity id used to create the execution and enqueue
+        # it; the worker's pk lookup then raised and left it pending forever.
         entity_id = request.data.get("entity_id") if hasattr(request.data, "get") else None
+        if entity_id and not _is_uuid(str(entity_id)):
+            raise ApplicationError("entity_id must be a valid id.", code="invalid_entity_id")
+        if not entity_id and trigger_requires_entity(rule.trigger_type):
+            raise ApplicationError(
+                f"A '{rule.trigger_type}' rule needs the entity_id of the record to run against.",
+                code="entity_id_required",
+            )
+
+        execution = create_manual_execution(rule=rule, actor=request.user)
         if entity_id:
             execution.entity_id = str(entity_id)
             execution.save(update_fields=["entity_id"])
@@ -126,7 +150,8 @@ class AutomationRuleRunView(OrganizationScopedMixin, APIView):
             object_type="automation.AutomationExecution", object_id=execution.id,
             changes={"trigger_source": "manual", "rule_id": str(rule.id)},
         )
-        run_execution_task.delay(str(execution.id), str(request.organization.id))
+        execution_id, organization_id = str(execution.id), str(request.organization.id)
+        transaction.on_commit(lambda: run_execution_task.delay(execution_id, organization_id))
         execution.refresh_from_db()
         return Response(AutomationExecutionSerializer(execution).data, status=201)
 
@@ -140,6 +165,9 @@ class AutomationExecutionListView(OrganizationScopedMixin, generics.ListAPIView)
         qs = AutomationExecution.objects.select_related("rule").prefetch_related("steps")
         rule_id = self.request.query_params.get("rule")
         if rule_id:
+            # A non-UUID made the filter raise Django's ValidationError -> 500.
+            if not _is_uuid(rule_id):
+                raise ApplicationError("rule must be a valid id.", code="invalid_rule_id")
             qs = qs.filter(rule_id=rule_id)
         status_filter = self.request.query_params.get("status")
         if status_filter:
@@ -173,7 +201,10 @@ class AutomationExecutionRetryView(OrganizationScopedMixin, APIView):
             organization_id=request.organization.id, actor=request.user, action=AuditLog.Action.UPDATE,
             object_type="automation.AutomationExecution", object_id=execution.id, changes={"action": "manual_retry"},
         )
-        run_execution_task.delay(str(execution.id), str(request.organization.id))
+        # After commit, for the same reason as AutomationRuleRunView: enqueued
+        # earlier, a worker can still see the pre-retry FAILED state.
+        execution_id, organization_id = str(execution.id), str(request.organization.id)
+        transaction.on_commit(lambda: run_execution_task.delay(execution_id, organization_id))
         execution.refresh_from_db()
         return Response(AutomationExecutionSerializer(execution).data)
 

@@ -11,7 +11,7 @@ from inventory.services.movements import record_stock_movement
 from items.models.item import ItemType
 from sales.models.customer import Customer
 from sales.models.delivery import DeliveryChallan, DeliveryChallanLine, DeliveryChallanStatus
-from sales.models.sales_order import SalesOrder, SalesOrderStatus
+from sales.models.sales_order import SalesOrder, SalesOrderLine, SalesOrderStatus
 from sales.selectors import get_fulfilled_quantity
 from sales.services.customers import assert_customer_usable_for_new_transaction
 from sales.services.sales_orders import refresh_order_fulfillment_status
@@ -203,6 +203,32 @@ def dispatch_delivery(*, challan_id, organization, actor=None) -> DeliveryChalla
     )
     if not lines:
         raise ApplicationError("Cannot dispatch a delivery challan with no lines.", code="delivery_no_lines")
+
+    # Re-check fulfilment NOW, not only when the draft was created. Drafts do
+    # not count towards get_fulfilled_quantity, so two drafts can each pass
+    # the create-time check for the full ordered quantity; without this, both
+    # dispatch and the order ships twice. Locking the order lines first
+    # serialises concurrent dispatches against the same order: the second
+    # waits, then sees the first one's committed DISPATCHED lines.
+    order_line_ids = sorted({line.source_order_line_id for line in lines if line.source_order_line_id})
+    if order_line_ids:
+        order_lines = {
+            order_line.id: order_line
+            for order_line in SalesOrderLine.objects.select_for_update().filter(pk__in=order_line_ids).order_by("pk")
+        }
+        dispatching = {}
+        for line in lines:
+            if line.source_order_line_id:
+                dispatching[line.source_order_line_id] = dispatching.get(line.source_order_line_id, 0) + line.quantity
+        for order_line_id, quantity in dispatching.items():
+            order_line = order_lines[order_line_id]
+            already_fulfilled = get_fulfilled_quantity(sales_order_line=order_line)
+            if already_fulfilled + quantity > order_line.quantity:
+                raise ApplicationError(
+                    f"Dispatching {quantity} would exceed the ordered quantity "
+                    f"({order_line.quantity}, {already_fulfilled} already dispatched).",
+                    code="over_fulfillment",
+                )
 
     for line in lines:
         # OUT movements are valued at the current weighted-average cost,

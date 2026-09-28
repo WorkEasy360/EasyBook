@@ -1,7 +1,8 @@
+from django.conf import settings
 from django.test import SimpleTestCase, override_settings
 
 from core.exceptions import ApplicationError
-from documents.services.validation import sanitize_filename, validate_upload
+from documents.services.validation import max_upload_size, sanitize_filename, validate_upload
 
 PDF_BYTES = b"%PDF-1.4\n%mock pdf content\n"
 PNG_BYTES = b"\x89PNG\r\n\x1a\n" + b"0" * 20
@@ -74,3 +75,24 @@ class ValidateUploadTests(SimpleTestCase):
         for name in ("photo.jpg", "photo.jpeg"):
             _, mime_type, _ = validate_upload(filename=name, content=JPEG_BYTES)
             self.assertEqual(mime_type, "image/jpeg")
+
+
+class MaxUploadSizeTests(SimpleTestCase):
+    """max_upload_size() must resolve the same ceiling validate_upload() would
+    reject on, but from the filename alone — it exists specifically to be
+    callable before any file content is read (documents/api/views.py's
+    DocumentUploadView.post, checked against UploadedFile.size)."""
+
+    def test_matches_category_by_extension(self):
+        self.assertEqual(max_upload_size("photo.png"), settings.DOCUMENT_MAX_UPLOAD_SIZES["image"])
+        self.assertEqual(max_upload_size("receipt.pdf"), settings.DOCUMENT_MAX_UPLOAD_SIZES["pdf"])
+        self.assertEqual(max_upload_size("notes.txt"), settings.DOCUMENT_MAX_UPLOAD_SIZES["default"])
+
+    def test_unrecognized_extension_still_gets_a_real_ceiling(self):
+        # Not "unlimited" — validate_upload() will reject this as unsupported
+        # anyway, but that rejection must not require reading an arbitrarily
+        # large file into memory first.
+        self.assertEqual(max_upload_size("payload.exe"), settings.DOCUMENT_MAX_UPLOAD_SIZES["default"])
+
+    def test_directory_traversal_in_filename_does_not_bypass_extension_lookup(self):
+        self.assertEqual(max_upload_size("../../../etc/passwd.png"), settings.DOCUMENT_MAX_UPLOAD_SIZES["image"])

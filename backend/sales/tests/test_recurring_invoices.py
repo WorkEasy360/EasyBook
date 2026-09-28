@@ -91,6 +91,32 @@ class RecurringTemplateTests(RecurringInvoiceTestsBase, TestCase):
             reactivated = activate_template(template=deactivated)
             self.assertTrue(reactivated.is_active)
 
+    def test_update_rejects_end_date_before_start_date(self):
+        # Regression: create checked this, update did not.
+        with tenant_context(organization_id=self.org_a.id):
+            template = self._make_template(start_date=datetime.date(2026, 4, 1))
+            with self.assertRaises(ApplicationError) as ctx:
+                update_recurring_template(template=template, end_date=datetime.date(2026, 3, 1))
+            self.assertEqual(ctx.exception.get_codes(), "recurring_end_before_start")
+            template.refresh_from_db()
+            self.assertIsNone(template.end_date)
+
+    def test_tracked_product_line_requires_a_warehouse(self):
+        # Regression: accepted here, then every scheduled occurrence failed
+        # with warehouse_required in the background job.
+        with tenant_context(organization_id=self.org_a.id):
+            product = create_item(
+                organization=self.org_a, item_type=ItemType.PRODUCT, name="Boxed widget", unit=self.unit,
+                sku="BOX-1", track_inventory=True, sales_account=self.sales_account,
+            )
+            with self.assertRaises(ApplicationError) as ctx:
+                create_recurring_template(
+                    organization=self.org_a, customer=self.customer, frequency=RecurringFrequency.MONTHLY,
+                    start_date=datetime.date(2026, 4, 1), receivable_account=self.ar_account,
+                    lines=[{"item": product, "quantity": Decimal("1"), "unit_price": Decimal("50.00")}],
+                )
+            self.assertEqual(ctx.exception.get_codes(), "warehouse_required")
+
     def test_cross_org_customer_rejected(self):
         with tenant_context(organization_id=self.org_a.id):
             with self.assertRaises(ApplicationError):
@@ -130,6 +156,33 @@ class GenerateDueInvoicesTests(RecurringInvoiceTestsBase, TransactionTestCase):
         with tenant_context(organization_id=self.org_a.id):
             template.refresh_from_db()
             self.assertEqual(template.next_run_at, datetime.date(2026, 5, 1))
+
+    def test_one_failing_template_does_not_stop_the_others(self):
+        # Regression: an exception from one template aborted the whole run.
+        with tenant_context(organization_id=self.org_a.id):
+            doomed_item = create_item(
+                organization=self.org_a, item_type=ItemType.SERVICE, name="Discontinued", unit=self.unit,
+                sales_account=self.sales_account,
+            )
+            doomed = create_recurring_template(
+                organization=self.org_a, customer=self.customer, frequency=RecurringFrequency.MONTHLY,
+                start_date=datetime.date(2026, 4, 1), receivable_account=self.ar_account,
+                lines=[{"item": doomed_item, "quantity": Decimal("1"), "unit_price": Decimal("10.00")}],
+            )
+            healthy = self._make_template(start_date=datetime.date(2026, 4, 1))
+            # Generation re-validates items, and inactive items are refused.
+            type(doomed_item).objects.filter(pk=doomed_item.pk).update(is_active=False)
+
+        with self.assertLogs("sales.recurring", level="ERROR"):
+            generated = generate_due_invoices(as_of=datetime.date(2026, 4, 1))
+
+        self.assertEqual(len(generated), 1)
+        with tenant_context(organization_id=self.org_a.id):
+            healthy.refresh_from_db()
+            doomed.refresh_from_db()
+            self.assertEqual(healthy.next_run_at, datetime.date(2026, 5, 1))
+            # Not advanced: it is retried on the next run.
+            self.assertEqual(doomed.next_run_at, datetime.date(2026, 4, 1))
 
     def test_not_yet_due_generates_nothing(self):
         with tenant_context(organization_id=self.org_a.id):

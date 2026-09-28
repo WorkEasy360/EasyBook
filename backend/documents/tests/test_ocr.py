@@ -25,7 +25,8 @@ class RequestOcrTests(DocumentsTestsBase):
 
     def test_manual_provider_result_needs_review(self):
         with tenant(self.org_a):
-            document = request_ocr(document=self.document, actor=self.user_a)
+            with self.captureOnCommitCallbacks(execute=True):
+                document = request_ocr(document=self.document, actor=self.user_a)
             document.refresh_from_db()
             result = OCRResult.objects.get(document=document)
         self.assertEqual(document.ocr_status, OCRStatus.NEEDS_REVIEW)
@@ -42,8 +43,9 @@ class RequestOcrTests(DocumentsTestsBase):
 
     def test_duplicate_ocr_request_is_idempotent(self):
         with tenant(self.org_a):
-            request_ocr(document=self.document)
-            request_ocr(document=self.document)
+            with self.captureOnCommitCallbacks(execute=True):
+                request_ocr(document=self.document)
+                request_ocr(document=self.document)
             count = OCRResult.objects.filter(document=self.document).count()
         self.assertEqual(count, 1)
 
@@ -56,7 +58,8 @@ class RequestOcrTests(DocumentsTestsBase):
                 mock_provider.return_value.extract.return_value = fake_result
                 mock_provider.return_value.name = "fake"
                 mock_provider.return_value.version = "1"
-                document = request_ocr(document=self.document)
+                with self.captureOnCommitCallbacks(execute=True):
+                    document = request_ocr(document=self.document)
                 document.refresh_from_db()
         self.assertEqual(document.ocr_status, OCRStatus.COMPLETED)
 
@@ -67,7 +70,8 @@ class RequestOcrTests(DocumentsTestsBase):
         with tenant(self.org_a):
             with patch("documents.services.ocr.get_provider") as mock_provider:
                 mock_provider.return_value.extract.return_value = fake_result
-                document = request_ocr(document=self.document)
+                with self.captureOnCommitCallbacks(execute=True):
+                    document = request_ocr(document=self.document)
                 document.refresh_from_db()
         self.assertEqual(document.ocr_status, OCRStatus.NEEDS_REVIEW)
 
@@ -75,7 +79,8 @@ class RequestOcrTests(DocumentsTestsBase):
         with tenant(self.org_a):
             with patch("documents.services.ocr.get_storage") as mock_storage:
                 mock_storage.return_value.get_bytes.side_effect = OSError("read failed")
-                document = request_ocr(document=self.document)
+                with self.captureOnCommitCallbacks(execute=True):
+                    document = request_ocr(document=self.document)
                 document.refresh_from_db()
                 result = OCRResult.objects.get(document=document)
         self.assertEqual(document.ocr_status, OCRStatus.FAILED)
@@ -85,8 +90,10 @@ class RequestOcrTests(DocumentsTestsBase):
         with tenant(self.org_a):
             with patch("documents.services.ocr.get_storage") as mock_storage:
                 mock_storage.return_value.get_bytes.side_effect = OSError("read failed")
-                request_ocr(document=self.document)
-            document = request_ocr(document=self.document)
+                with self.captureOnCommitCallbacks(execute=True):
+                    request_ocr(document=self.document)
+            with self.captureOnCommitCallbacks(execute=True):
+                document = request_ocr(document=self.document)
             document.refresh_from_db()
         self.assertEqual(document.ocr_status, OCRStatus.NEEDS_REVIEW)
 

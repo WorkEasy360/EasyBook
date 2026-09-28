@@ -1,0 +1,79 @@
+name: Infrastructure CI
+
+# Static checks and mocked-provider plan tests only: `terraform fmt -check`,
+# `terraform validate` and `terraform test`, all of which run without AWS
+# credentials (infrastructure/terraform/README.md).
+# plan/apply need real credentials and explicit human approval and are never
+# run from here.
+#
+# Exists because the Terraform stack once lived only on a developer's disk —
+# nothing in CI would have noticed it failing to validate.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: infrastructure-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    working-directory: infrastructure/terraform
+
+jobs:
+  terraform:
+    name: Terraform fmt and validate
+    runs-on: ubuntu-latest
+    steps:
+      # Pinned to commit SHAs, not tags — see backend-ci.yml.
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09  # v5
+      - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e  # v4.0.1
+        with:
+          terraform_version: 1.16.3
+          terraform_wrapper: false
+
+      - name: Format check
+        run: terraform fmt -check -recursive
+
+      # -backend=false: validation must never touch (or need credentials for)
+      # the remote state backend.
+      - name: Init (providers only)
+        run: terraform init -backend=false -input=false
+
+      - name: Validate
+        run: terraform validate
+
+      # tests/*.tftest.hcl plan the stack against a mocked AWS provider
+      # (tests/mocks) — no credentials — and assert the regressions that must
+      # never come back: health checks, deployment rollback, WAF handling.
+      - name: Plan-level tests
+        run: terraform test
+
+      # State must be remote and locked. `terraform init` with no backend
+      # config has to REFUSE rather than quietly keep state on whatever
+      # machine ran it, which is what an unconfigured (or commented-out)
+      # backend block does.
+      - name: Remote state is configured and locked
+        run: |
+          grep -Eq '^[[:space:]]*backend "s3" \{' versions.tf
+          grep -Eq '^[[:space:]]*use_lockfile[[:space:]]*=[[:space:]]*true' versions.tf
+          rm -rf .terraform
+          if terraform init -input=false > init.log 2>&1; then
+            echo "terraform init without -backend-config must fail, but it succeeded:"
+            cat init.log
+            exit 1
+          fi
+          grep -q 'required by the backend' init.log
+
+      - name: Bootstrap module validates
+        working-directory: infrastructure/terraform/bootstrap
+        run: |
+          terraform init -backend=false -input=false
+          terraform validate

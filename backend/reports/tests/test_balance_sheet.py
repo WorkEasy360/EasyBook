@@ -129,6 +129,30 @@ class BalanceSheetTests(TestCase):
             result = get_balance_sheet(organization=self.org, as_of_date=datetime.date(2026, 4, 30))
         self.assertEqual(result["totals"]["total_assets"], Decimal("13200"))
 
+    def test_reversed_journal_nets_out_of_the_balance_sheet(self):
+        from accounting.services.posting import reverse_journal
+
+        with tenant_context(organization_id=self.org.id):
+            journal = create_draft_journal(
+                organization=self.org,
+                posting_date="2026-04-10",
+                currency=self.currency,
+                lines=[
+                    {"account_id": self.cash.id, "debit": Decimal("5000")},
+                    {"account_id": self.revenue.id, "credit": Decimal("5000")},
+                ],
+                created_by=self.user,
+            )
+            posted = post_journal(journal_id=journal.id, organization=self.org, actor=self.user)
+            reverse_journal(
+                journal_id=posted.id, organization=self.org, actor=self.user,
+                posting_date=datetime.date(2026, 4, 11),
+            )
+            result = get_balance_sheet(organization=self.org, as_of_date=datetime.date(2026, 4, 30))
+        self.assertTrue(result["is_balanced"])
+        self.assertEqual(result["totals"]["total_assets"], Decimal("13200"))
+        self.assertEqual(result["totals"]["total_equity"], Decimal("10700"))
+
     def test_balance_sheet_is_tenant_scoped(self):
         other_org, other_user, _ = make_org_with_owner("Other Org", "bs-other@example.com")
         with tenant_context(organization_id=other_org.id):

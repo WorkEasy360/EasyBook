@@ -59,6 +59,23 @@ class ReportsFinancialStatementsAPITests(APITestCase):
     def _headers(self, org):
         return {"HTTP_X_ORGANIZATION_ID": str(org.id)}
 
+    # --- Malformed ids ---------------------------------------------------
+
+    def test_malformed_ids_are_not_found_not_server_errors(self):
+        # Regression: a non-UUID id raised Django's ValidationError from the
+        # primary-key lookup, which was not caught and returned a 500.
+        self.client.force_authenticate(user=self.owner_a)
+        cases = [
+            ("/api/v1/reports/general-ledger/", {"account": "notauuid", "from_date": "2026-04-01", "to_date": "2026-04-30"}),
+            ("/api/v1/reports/journals/", {"account": "notauuid"}),
+            ("/api/v1/reports/inventory/movements/", {"item": "notauuid"}),
+            ("/api/v1/reports/inventory/low-stock/", {"warehouse": "nope"}),
+        ]
+        for path, params in cases:
+            with self.subTest(path=path):
+                response = self.client.get(path, params, **self._headers(self.org_a))
+                self.assertEqual(response.status_code, 404)
+
     # --- Profit & Loss -------------------------------------------------
 
     def test_owner_can_view_profit_loss(self):

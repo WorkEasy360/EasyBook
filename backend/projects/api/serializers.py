@@ -100,6 +100,14 @@ class ProjectCreateSerializer(serializers.Serializer):
     end_date = serializers.DateField(required=False, allow_null=True, default=None)
     notes = serializers.CharField(required=False, allow_blank=True, default="")
 
+    def validate_project_code(self, value):
+        # uniq_project_code_per_org is the backstop; reaching it is an
+        # IntegrityError (HTTP 500) for an ordinary duplicate, so check first.
+        request = self.context["request"]
+        if Project.objects.filter(organization=request.organization, project_code=value).exists():
+            raise serializers.ValidationError(f"A project with code '{value}' already exists.")
+        return value
+
     def create(self, validated_data):
         request = self.context["request"]
         return create_project(
@@ -200,6 +208,12 @@ class TaskCreateSerializer(serializers.Serializer):
         max_digits=18, decimal_places=2, required=False, allow_null=True, default=None
     )
 
+    def validate_name(self, value):
+        # uniq_task_name_per_project backstop -> 400 on `name`, not a 500.
+        if Task.objects.filter(project=self.context["project"], name=value).exists():
+            raise serializers.ValidationError(f"This project already has a task named '{value}'.")
+        return value
+
     def create(self, validated_data):
         request = self.context["request"]
         return create_task(
@@ -218,6 +232,12 @@ class TaskUpdateSerializer(serializers.Serializer):
     hourly_rate = serializers.DecimalField(max_digits=18, decimal_places=2, required=False, allow_null=True)
     service_item_id = serializers.UUIDField(required=False, allow_null=True)
     estimated_hours = serializers.DecimalField(max_digits=18, decimal_places=2, required=False, allow_null=True)
+
+    def validate_name(self, value):
+        task = self.context["task"]
+        if Task.objects.filter(project_id=task.project_id, name=value).exclude(pk=task.pk).exists():
+            raise serializers.ValidationError(f"This project already has a task named '{value}'.")
+        return value
 
     def save(self, **kwargs):
         request = self.context["request"]

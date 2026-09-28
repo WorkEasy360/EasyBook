@@ -83,6 +83,26 @@ class GeneralLedgerAndJournalReportAPITests(APITestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.data["count"], 3)
 
+    def test_journal_report_and_ledger_keep_a_reversed_original_beside_its_reversal(self):
+        from accounting.services.posting import reverse_journal
+
+        with tenant_context(organization_id=self.org.id):
+            reverse_journal(
+                journal_id=self.journals[0].id, organization=self.org, actor=self.owner,
+                posting_date=datetime.date(2026, 4, 6),
+            )
+        self.client.force_authenticate(user=self.owner)
+        journals = self.client.get("/api/v1/reports/journals/", **self._headers())
+        self.assertEqual(journals.status_code, 200)
+        self.assertEqual(journals.data["count"], 4)
+
+        ledger = self.client.get(
+            "/api/v1/reports/general-ledger/", {"account": str(self.cash.id)}, **self._headers()
+        )
+        self.assertEqual(ledger.status_code, 200)
+        self.assertEqual(ledger.data["count"], 4)
+        self.assertEqual(ledger.data["closing_balance"], "75.00")
+
     def test_journal_report_date_range_filter(self):
         self.client.force_authenticate(user=self.owner)
         response = self.client.get(

@@ -1,5 +1,6 @@
 import datetime
 
+from django.core.exceptions import ValidationError as DjangoValidationError
 from rest_framework import generics
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -253,7 +254,7 @@ class GeneralLedgerReportView(OrganizationScopedMixin, APIView):
             raise ApplicationError("account is required.", code="account_required")
         try:
             account = Account.objects.get(pk=account_id)
-        except (Account.DoesNotExist, ValueError, TypeError):
+        except (Account.DoesNotExist, ValueError, TypeError, DjangoValidationError):
             raise ApplicationError("Account not found.", code="account_not_found", status_code=404)
 
         from_date = parse_date(request.query_params.get("from_date"), param_name="from_date")
@@ -301,7 +302,7 @@ class JournalReportView(OrganizationScopedMixin, generics.ListAPIView):
         if account_id:
             try:
                 account = Account.objects.get(pk=account_id)
-            except (Account.DoesNotExist, ValueError, TypeError):
+            except (Account.DoesNotExist, ValueError, TypeError, DjangoValidationError):
                 raise ApplicationError("Account not found.", code="account_not_found", status_code=404)
 
         return get_journal_report_queryset(
@@ -504,6 +505,9 @@ class ExpensesByCategoryView(OrganizationScopedMixin, APIView):
 # --- Inventory ----------------------------------------------------------
 
 
+# A malformed id ("?item=notauuid") makes a UUID primary-key lookup raise
+# Django's ValidationError, not ValueError — uncaught, it surfaced as a 500.
+# Every id lookup below treats it the same as a missing record.
 def _resolve_warehouse(request):
     warehouse_id = request.query_params.get("warehouse")
     if not warehouse_id:
@@ -512,7 +516,7 @@ def _resolve_warehouse(request):
 
     try:
         return Warehouse.objects.get(pk=warehouse_id)
-    except (Warehouse.DoesNotExist, ValueError, TypeError):
+    except (Warehouse.DoesNotExist, ValueError, TypeError, DjangoValidationError):
         raise ApplicationError("Warehouse not found.", code="warehouse_not_found", status_code=404)
 
 
@@ -524,7 +528,7 @@ def _resolve_item(request):
 
     try:
         return Item.objects.get(pk=item_id)
-    except (Item.DoesNotExist, ValueError, TypeError):
+    except (Item.DoesNotExist, ValueError, TypeError, DjangoValidationError):
         raise ApplicationError("Item not found.", code="item_not_found", status_code=404)
 
 

@@ -46,9 +46,15 @@ class RecordTransferTests(BankingTestsBase):
 
     def test_cross_currency_transfers_are_refused_rather_than_guessed(self):
         """The gap between the two legs is an FX gain or loss needing an
-        account this phase has no convention for."""
+        account this phase has no convention for.
+
+        A foreign-currency bank account can no longer be created at all
+        (accounting/services/currency.py), so this builds one directly as
+        pre-guard data would look: the transfer guard still has to hold for it.
+        """
         from accounting.models.account import AccountType
         from accounting.services.accounts import create_account
+        from banking.models.bank_account import BankAccount
         from banking.services.bank_accounts import create_bank_account
         from core.tests.factories import make_currency
 
@@ -57,7 +63,13 @@ class RecordTransferTests(BankingTestsBase):
             gl_usd = create_account(
                 organization=self.org_a, code="1005", name="USD Bank", account_type=AccountType.ASSET
             )
-            usd_bank = create_bank_account(
+            with self.assertRaises(ApplicationError) as refused:
+                create_bank_account(
+                    organization=self.org_a, name="USD Account", account=gl_usd, currency=usd
+                )
+            self.assertEqual(refused.exception.get_codes(), "foreign_currency_not_supported")
+
+            usd_bank = BankAccount.objects.create(
                 organization=self.org_a, name="USD Account", account=gl_usd, currency=usd
             )
             with self.assertRaises(ApplicationError) as ctx:

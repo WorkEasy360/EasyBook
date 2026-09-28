@@ -8,8 +8,9 @@ OWNS
 - `models.py` — `TimeStampedModel`, `TenantScopedModel` (abstract bases; every org-owned model inherits `TenantScopedModel`).
 - `managers.py` — `TenantManager`: fails closed (`.none()`) when no tenant context is set.
 - `rls.py` — helpers for writing RLS-enabling migrations (`enable_rls_org_scoped`, `enable_rls_self_or_org_scoped`).
-- `views.py` — `OrganizationScopedMixin` (resolves + enforces `X-Organization-Id`), `AuthenticatedAPIView`, `HealthCheckView`.
+- `views.py` — `OrganizationScopedMixin` (resolves + enforces `X-Organization-Id`), `AuthenticatedAPIView`, `HealthCheckView` (readiness: DB+cache), `LivenessCheckView` (no dependencies, `throttle_classes = []` — see SECURITY). In a real deployment `/api/v1/health/live/` never reaches that view: `middleware.LivenessProbeMiddleware` (first in MIDDLEWARE) answers GET/HEAD on that exact path before host validation and the HTTPS redirect, because ALB/ECS probes send the task IP or 127.0.0.1 as Host (400 DisallowedHost otherwise — `tests/test_health_probes.py`). The ALB and ECS probe liveness only; readiness is for monitoring, never for routing or task replacement.
 - `exceptions.py`, `pagination.py`, `logging.py`, `middleware.py`, `idempotency.py`.
+- `throttling.py` — `FailOpen{Scoped,User,Anon}RateThrottle`, the `DEFAULT_THROTTLE_CLASSES` (`config/settings/base.py`). Wrap DRF's own throttle classes to catch `redis.exceptions.RedisError` and allow the request through rather than 500 it — Django's built-in Redis cache backend does not swallow connection errors on its own.
 - `money.py` — `calculate_line`/`calculate_document_totals`, the ONE rounding policy every priced document in every module uses. `enums.py` — `PaymentMethod`, `RecurringFrequency`. `recurrence.py` — `advance_occurrence`. All three arrived here from `sales` when `purchases` needed them: a peer-to-peer purchases->sales import would couple two modules at the same layer, and a second copy would drift. Only promote something to `core` once a SECOND module genuinely needs it.
 
 DOES NOT OWN
@@ -32,6 +33,7 @@ Any change to `tenancy.py`, `managers.py`, or `rls.py` requires rerunning `core/
 SECURITY
 - `OrganizationScopedMixin.initial()` must always resolve membership and set both the contextvar and the Postgres GUC BEFORE any view body runs.
 - Never add a code path that sets the organization GUC from anything other than a verified, active `Membership` row.
+- Rate limiting fails OPEN on a cache-backend outage (`throttling.py`), unlike tenant isolation/auth which must fail closed — a protective, non-correctness-critical layer degrading during a Redis outage must never take the whole API down with it (phase 12 security review, 2026-09-16; see `infrastructure/runbooks/redis-celery-outage.md`).
 
 READ FIRST
 - `tenancy.py`, `models.py`, `managers.py`, `rls.py`, `views.py`

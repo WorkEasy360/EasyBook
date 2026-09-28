@@ -44,10 +44,19 @@ class VendorTests(TestCase):
             self.assertEqual(entries.first().action, AuditLog.Action.CREATE)
 
     def test_vendor_code_unique_per_organization(self):
+        # The service refuses a re-used code with a domain error (it used to
+        # surface as an IntegrityError and a 500 at the API); the database
+        # constraint stays the backstop for a write that bypasses the service.
         with tenant_context(organization_id=self.org_a.id):
-            self._vendor()
-            with self.assertRaises(IntegrityError):
+            existing = self._vendor()
+            with self.assertRaises(ApplicationError) as raised:
                 self._vendor()
+            self.assertEqual(raised.exception.get_codes(), "duplicate_vendor_code")
+            with self.assertRaises(IntegrityError):
+                Vendor.objects.create(
+                    organization=self.org_a, vendor_code=existing.vendor_code, display_name="Bypass",
+                    currency=self.currency,
+                )
 
     def test_same_vendor_code_allowed_in_another_organization(self):
         with tenant_context(organization_id=self.org_a.id):

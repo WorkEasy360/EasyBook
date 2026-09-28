@@ -7,7 +7,7 @@ from accounting.models.journal import JournalEntry, JournalLine
 from accounting.services.accounts import create_account, update_account
 from accounting.services.journals import create_draft_journal, replace_draft_lines
 from accounting.services.posting import reverse_journal
-from accounts.models import Currency
+from accounts.models import Currency, FiscalYear
 
 
 class AccountSerializer(serializers.ModelSerializer):
@@ -19,6 +19,18 @@ class AccountSerializer(serializers.ModelSerializer):
         ]
         # is_system is platform-assigned, never client-settable through the API.
         read_only_fields = ["id", "is_system", "created_at", "updated_at"]
+
+    def validate_code(self, value):
+        # The (organization, code) UniqueConstraint is the backstop, but hitting
+        # it surfaces as an IntegrityError -> HTTP 500 for an ordinary typo.
+        # Checked here so the client gets a 400 on the `code` field instead.
+        request = self.context["request"]
+        existing = Account.objects.filter(organization=request.organization, code=value)
+        if self.instance is not None:
+            existing = existing.exclude(pk=self.instance.pk)
+        if existing.exists():
+            raise serializers.ValidationError(f"An account with code '{value}' already exists.")
+        return value
 
     def create(self, validated_data):
         request = self.context["request"]
@@ -99,3 +111,15 @@ class JournalEntryReverseSerializer(serializers.Serializer):
             posting_date=self.validated_data.get("posting_date"),
             memo=self.validated_data.get("memo", ""),
         )
+
+
+class FiscalYearSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = FiscalYear
+        fields = ["id", "start_date", "end_date", "is_closed", "created_at"]
+        read_only_fields = fields
+
+
+class FiscalYearCreateSerializer(serializers.Serializer):
+    start_date = serializers.DateField()
+    end_date = serializers.DateField()

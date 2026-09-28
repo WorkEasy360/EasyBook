@@ -12,6 +12,13 @@ class JournalStatus(models.TextChoices):
     REVERSED = "reversed", "Reversed"
 
 
+# Statuses whose lines are part of the ledger. A REVERSED journal stays a
+# posted fact of its own period; its effect is cancelled by the separate POSTED
+# reversal journal. Counting POSTED alone drops the original but keeps its
+# mirror, so every balance/report derived from JournalLine must use this.
+LEDGER_STATUSES = (JournalStatus.POSTED, JournalStatus.REVERSED)
+
+
 class JournalEntry(TenantScopedModel):
     """A single accounting transaction: header for a balanced set of JournalLines.
 
@@ -135,10 +142,13 @@ class JournalLine(TenantScopedModel):
         return JournalEntry.all_objects.filter(pk=self.journal_entry_id).values_list("status", flat=True).first()
 
     def save(self, *args, **kwargs):
-        if not self._state.adding:
-            parent_status = self._parent_status()
-            if parent_status and parent_status != JournalStatus.DRAFT:
-                raise ValueError("Cannot modify a line belonging to a posted journal entry.")
+        # Adding counts too: a new line on a posted journal changes its
+        # totals exactly as much as editing one. The database trigger
+        # (migration 0005) enforces the same for every path, including
+        # queryset update/delete and bulk_create, which never call save().
+        parent_status = self._parent_status()
+        if parent_status and parent_status != JournalStatus.DRAFT:
+            raise ValueError("Cannot modify a line belonging to a posted journal entry.")
         super().save(*args, **kwargs)
 
     def delete(self, *args, **kwargs):

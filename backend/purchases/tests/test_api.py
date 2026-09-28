@@ -2,6 +2,7 @@
 server-computed totals are never taken from the client.
 """
 
+import json
 from decimal import Decimal
 
 from rest_framework.test import APIClient
@@ -60,6 +61,33 @@ class VendorApiTests(PurchasesApiTestsBase):
         codes = {row["vendor_code"] for row in listing.data["results"]}
         self.assertIn("VEN-API", codes)
 
+    def test_create_vendor_accepts_is_active(self):
+        """VendorSerializer lists is_active as writable, so a client may send
+        it. create_vendor() had no such parameter, which made an ordinary
+        create raise TypeError and return 500 rather than 201 — the same
+        defect as create_customer."""
+        response = self.client.post(
+            "/api/v1/purchases/vendors/",
+            {
+                "vendor_code": "VEN-INACTIVE",
+                "display_name": "Dormant Supplier",
+                "currency": str(self.currency.pk),
+                "is_active": False,
+            },
+            format="json", **self._headers(),
+        )
+        self.assertEqual(response.status_code, 201, response.data)
+        self.assertFalse(response.data["is_active"])
+
+    def test_create_vendor_defaults_to_active(self):
+        response = self.client.post(
+            "/api/v1/purchases/vendors/",
+            {"vendor_code": "VEN-ACTIVE", "display_name": "Active Supplier", "currency": str(self.currency.pk)},
+            format="json", **self._headers(),
+        )
+        self.assertEqual(response.status_code, 201, response.data)
+        self.assertTrue(response.data["is_active"])
+
     def test_list_never_leaks_another_organizations_vendors(self):
         response = self.client.get("/api/v1/purchases/vendors/", **self._headers())
         names = {row["display_name"] for row in response.data["results"]}
@@ -82,6 +110,33 @@ class VendorApiTests(PurchasesApiTestsBase):
         viewer = self._as_role(Role.VIEWER, "purch-viewer-detail@example.com")
         response = viewer.get(f"/api/v1/purchases/vendors/{self.vendor.id}/", **self._headers())
         self.assertEqual(response.status_code, 200)
+
+    def test_duplicate_vendor_code_returns_a_domain_error(self):
+        """uniq_vendor_code_per_org used to surface as an IntegrityError and a
+        500 on an ordinary re-used code; it must be a 400 the form can show."""
+        payload = {"vendor_code": "VEN-DUP", "display_name": "First", "currency": str(self.currency.pk)}
+        first = self.client.post("/api/v1/purchases/vendors/", payload, format="json", **self._headers())
+        self.assertEqual(first.status_code, 201, first.data)
+
+        again = self.client.post(
+            "/api/v1/purchases/vendors/", {**payload, "display_name": "Second"}, format="json", **self._headers()
+        )
+        self.assertEqual(again.status_code, 400)
+        self.assertEqual(again.data["error"]["code"], "duplicate_vendor_code")
+
+        renamed = self.client.patch(
+            f"/api/v1/purchases/vendors/{self.vendor.id}/", {"vendor_code": "VEN-DUP"},
+            format="json", **self._headers(),
+        )
+        self.assertEqual(renamed.status_code, 400)
+        self.assertEqual(renamed.data["error"]["code"], "duplicate_vendor_code")
+
+        # Re-saving a vendor with its own unchanged code is not a duplicate.
+        unchanged = self.client.patch(
+            f"/api/v1/purchases/vendors/{first.data['id']}/", {"vendor_code": "VEN-DUP", "notes": "kept"},
+            format="json", **self._headers(),
+        )
+        self.assertEqual(unchanged.status_code, 200, unchanged.data)
 
 
 class PurchaseOrderApiTests(PurchasesApiTestsBase):
@@ -122,6 +177,19 @@ class PurchaseOrderApiTests(PurchasesApiTestsBase):
         )
         self.assertEqual(patch.status_code, 400)
         self.assertEqual(patch.data["error"]["code"], "purchase_order_not_draft")
+
+    def test_match_renders_quantities_and_prices_as_decimal_strings(self):
+        """response.data holds Decimals, so only the rendered body shows what
+        the client receives: DRF's JSONEncoder turns a bare Decimal into a
+        float. Amounts must cross the wire as strings, as everywhere else."""
+        order_id = self._create_order().data["id"]
+        response = self.client.get(f"/api/v1/purchases/orders/{order_id}/match/", **self._headers())
+        self.assertEqual(response.status_code, 200)
+        line = json.loads(response.content)["lines"][0]
+        self.assertEqual(line["ordered_quantity"], "10.0000")
+        self.assertEqual(line["ordered_unit_price"], "50.00")
+        self.assertIsInstance(line["received_quantity"], str)
+        self.assertIsInstance(line["max_price_variance"], str)
 
     def test_match_endpoint_is_readable_by_a_viewer(self):
         order_id = self._create_order().data["id"]
@@ -179,6 +247,23 @@ class BillApiTests(PurchasesApiTestsBase):
         # amount_paid/amount_due are derived on read, never stored.
         self.assertEqual(Decimal(posted.data["amount_paid"]), Decimal("0"))
         self.assertEqual(Decimal(posted.data["amount_due"]), Decimal("200.00"))
+
+    def test_derived_amounts_and_match_are_rendered_as_decimal_strings(self):
+        """amount_paid/amount_due are SerializerMethodFields. Returning a bare
+        Decimal rendered them as floats (200.0) — asserted on the rendered
+        body, because response.data still holds the Decimal."""
+        created = self._create_bill()
+        posted = self.client.post(f"/api/v1/purchases/bills/{created.data['id']}/post/", **self._headers())
+        body = json.loads(posted.content)
+        self.assertEqual(body["amount_paid"], "0")
+        self.assertEqual(body["amount_due"], "200.00")
+
+        match = self.client.get(f"/api/v1/purchases/bills/{created.data['id']}/match/", **self._headers())
+        self.assertEqual(match.status_code, 200)
+        line = json.loads(match.content)["lines"][0]
+        self.assertEqual(line["billed_quantity"], "2.0000")
+        self.assertEqual(line["billed_unit_price"], "100.00")
+        self.assertIsInstance(line["price_variance"], str)
 
     def test_void_requires_the_void_permission(self):
         created = self._create_bill()
@@ -429,6 +514,20 @@ class VendorCreditApiTests(PurchasesApiTestsBase):
         )
         self.assertEqual(voided.status_code, 200)
         self.assertEqual(voided.data["status"], "void")
+
+    def test_create_rejects_a_reason_outside_the_choices(self):
+        # Regression: the create serializer accepted any string as the reason.
+        response = self.client.post(
+            "/api/v1/purchases/vendor-credits/",
+            {
+                "vendor_id": str(self.vendor.id), "credit_date": str(ORDER_DATE), "reason": "bogus",
+                "unapplied_credit_account_id": str(self.vendor_advance_account.id),
+                "lines": [{"item_id": str(self.service.id), "quantity": "1", "unit_price": "10.00"}],
+            },
+            format="json", **self._headers(),
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("reason", str(response.data))
 
     def test_viewer_can_retrieve_but_not_issue(self):
         with tenant_context(organization_id=self.org_a.id):

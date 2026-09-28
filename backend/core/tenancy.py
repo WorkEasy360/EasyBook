@@ -13,6 +13,7 @@ is True so every request already runs inside one (see config/settings/base.py).
 import contextvars
 from contextlib import contextmanager
 
+from django.db import Error as DjangoDBError
 from django.db import connection, transaction
 
 _current_organization_id = contextvars.ContextVar("current_organization_id", default=None)
@@ -45,10 +46,31 @@ def set_current_organization_id(organization_id) -> None:
 
 
 def clear_tenant_context() -> None:
+    """Reset both the contextvar scope and the mirrored session GUCs.
+
+    Always clears the DB-side GUC unconditionally, regardless of the current
+    Python contextvar state: `tenant_context()` below can leave the two out
+    of sync (its `finally` resets the contextvar via `.reset()` but does not
+    re-clear the GUC), so skipping the DB call whenever the contextvar
+    happens to read as unset would leave a stale GUC value from an earlier
+    `with tenant_context(...)` block active for the rest of the transaction —
+    exactly the RLS bypass core/tests/test_tenant_isolation.py guards against.
+    The DjangoDBError guard is pure resilience for a genuinely broken
+    connection (e.g. during a DB outage): SET LOCAL is scoped to the
+    request's own transaction and is discarded the instant that transaction
+    ends, so there is nothing security-relevant left to clear once the
+    connection itself is unusable. RequestIDMiddleware additionally skips
+    calling this at all for routes that never touch tenant context in the
+    first place (e.g. the liveness probe), rather than this function trying
+    to infer that itself.
+    """
     _current_organization_id.set(None)
     _current_user_id.set(None)
-    _set_guc("app.current_organization_id", None)
-    _set_guc("app.current_user_id", None)
+    try:
+        _set_guc("app.current_organization_id", None)
+        _set_guc("app.current_user_id", None)
+    except DjangoDBError:
+        pass
 
 
 @contextmanager

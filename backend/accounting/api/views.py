@@ -1,11 +1,15 @@
 import datetime
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from django.utils import timezone
 from rest_framework import generics
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from accounting.api.serializers import (
     AccountSerializer,
+    FiscalYearCreateSerializer,
+    FiscalYearSerializer,
     JournalEntryCreateSerializer,
     JournalEntryLinesUpdateSerializer,
     JournalEntryReverseSerializer,
@@ -14,9 +18,11 @@ from accounting.api.serializers import (
 from accounting.models.account import Account
 from accounting.models.journal import JournalEntry, JournalStatus
 from accounting.selectors import get_account_running_ledger, get_trial_balance
+from accounting.services.fiscal import create_fiscal_year, current_fiscal_year
 from accounting.services.posting import post_journal
+from accounts.models import FiscalYear
 from authz.permissions import HasOrgPermission
-from authz.roles import Permission
+from authz.roles import Permission, role_has_permission
 from core.exceptions import ApplicationError
 from core.views import OrganizationScopedMixin
 
@@ -214,3 +220,55 @@ def _parse_date(value):
         return datetime.date.fromisoformat(value)
     except ValueError:
         raise ApplicationError(f"Invalid date '{value}', expected YYYY-MM-DD.", code="invalid_date")
+
+
+def _organization_today(organization) -> datetime.date:
+    try:
+        zone = ZoneInfo(organization.timezone)
+    except (ZoneInfoNotFoundError, ValueError):
+        zone = ZoneInfo("UTC")
+    return timezone.localdate(timezone=zone)
+
+
+class FiscalYearListCreateView(OrganizationScopedMixin, generics.ListAPIView):
+    """GET lists the organization's fiscal years; POST creates one through
+    accounting.services.fiscal.create_fiscal_year (201 created, 200 when the
+    identical range already exists)."""
+
+    permission_classes = [HasOrgPermission]
+    serializer_class = FiscalYearSerializer
+
+    @property
+    def required_permission(self):
+        return Permission.VIEW_ACCOUNTING if self.request.method == "GET" else Permission.MANAGE_ACCOUNTING
+
+    def get_queryset(self):
+        return FiscalYear.objects.all()
+
+    def post(self, request):
+        serializer = FiscalYearCreateSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        fiscal_year, created = create_fiscal_year(
+            organization=request.organization, actor=request.user, **serializer.validated_data
+        )
+        return Response(FiscalYearSerializer(fiscal_year).data, status=201 if created else 200)
+
+
+class FiscalYearSetupStatusView(OrganizationScopedMixin, APIView):
+    """Whether the active organization is ready for day-to-day accounting.
+
+    Open to every member (no role permission): the frontend asks this on every
+    authenticated page to decide whether to send the user to fiscal-year
+    setup, and it reveals only the organization's own setup state."""
+
+    def get(self, request):
+        organization = request.organization
+        current = current_fiscal_year(organization=organization, today=_organization_today(organization))
+        return Response(
+            {
+                "has_current_fiscal_year": current is not None,
+                "current": FiscalYearSerializer(current).data if current else None,
+                "fiscal_year_start_month": organization.fiscal_year_start_month,
+                "can_manage": role_has_permission(request.membership.role, Permission.MANAGE_ACCOUNTING),
+            }
+        )

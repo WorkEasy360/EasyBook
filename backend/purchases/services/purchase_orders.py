@@ -2,6 +2,7 @@ from decimal import Decimal
 
 from django.db import transaction
 
+from accounting.services.currency import assert_base_currency
 from accounts.services import allocate_sequence_number
 from audit.models import AuditLog
 from audit.services import record as record_audit
@@ -67,6 +68,7 @@ def create_purchase_order(
         )
 
     currency = currency or vendor.currency
+    assert_base_currency(organization=organization, currency=currency, exchange_rate=exchange_rate)
 
     order_number = allocate_sequence_number(
         organization_id=organization.id, key=PURCHASE_ORDER_NUMBER_SEQUENCE_KEY, prefix="PO-"

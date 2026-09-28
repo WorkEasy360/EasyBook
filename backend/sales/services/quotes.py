@@ -2,6 +2,7 @@ from decimal import Decimal
 
 from django.db import transaction
 
+from accounting.services.currency import assert_base_currency
 from accounts.services import allocate_sequence_number
 from audit.models import AuditLog
 from audit.services import record as record_audit
@@ -52,6 +53,7 @@ def create_quote(
         raise ApplicationError("A quote needs at least one line.", code="quote_no_lines")
 
     currency = currency or customer.currency
+    assert_base_currency(organization=organization, currency=currency, exchange_rate=exchange_rate)
     # Determined here even though a quote carries no component columns and
     # posts nothing: the treatment is what converts forward to the order and
     # invoice, so deciding it once at the start is what stops it drifting.

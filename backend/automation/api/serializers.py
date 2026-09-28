@@ -8,6 +8,17 @@ from automation.models.step_execution import AutomationStepExecution
 from automation.services.rules import create_rule, update_rule
 
 
+def _mask_webhook_secret(action_id, config):
+    """The single masking rule for a webhook action's config, wherever it is
+    serialized. A rule's live config and an execution's config SNAPSHOT carry
+    the same secret; masking only the former leaked it through run history to
+    every role that can view history, while configuring webhooks is limited to
+    MANAGE_AUTOMATION_WEBHOOKS."""
+    if action_id == "call_webhook" and isinstance(config, dict) and config.get("secret"):
+        return {**config, "secret": "********"}  # nosec B105 -- masking placeholder, not a credential
+    return config
+
+
 class AutomationConditionSerializer(serializers.ModelSerializer):
     class Meta:
         model = AutomationCondition
@@ -25,8 +36,7 @@ class AutomationActionConfigSerializer(serializers.ModelSerializer):
         # section 89) — no secret-storage architecture exists in this
         # codebase yet, so masking the API response is the control until
         # one does.
-        if data.get("action_id") == "call_webhook" and data.get("config", {}).get("secret"):
-            data["config"] = {**data["config"], "secret": "********"}  # nosec B105 -- masking placeholder, not a credential
+        data["config"] = _mask_webhook_secret(data.get("action_id"), data.get("config"))
         return data
 
 
@@ -99,6 +109,11 @@ class AutomationStepExecutionSerializer(serializers.ModelSerializer):
             "failure_category", "error_message", "result", "started_at", "finished_at",
         ]
         read_only_fields = fields
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        data["config_snapshot"] = _mask_webhook_secret(data.get("action_id"), data.get("config_snapshot"))
+        return data
 
 
 class AutomationExecutionSerializer(serializers.ModelSerializer):

@@ -330,6 +330,53 @@ class CreditNoteVoidTests(CreditNoteTestsBase):
             original = JournalEntry.objects.get(pk=journal_id)
             self.assertEqual(original.status, JournalStatus.REVERSED)
 
+    def test_voiding_a_full_credit_reopens_the_invoice(self):
+        # Regression: the invoice stayed PAID with the full amount due again,
+        # and so vanished from outstanding/ageing reports.
+        with tenant_context(organization_id=self.org_a.id):
+            invoice = self._make_invoice(unit_price=Decimal("100.00"))
+            credit_note = create_credit_note(
+                organization=self.org_a, customer=self.customer, credit_note_date=datetime.date(2026, 4, 15),
+                source_invoice=invoice,
+                lines=[{
+                    "item": self.service_item, "quantity": Decimal("1"), "unit_price": Decimal("100.00"),
+                    "source_invoice_line": invoice.lines.first(),
+                }],
+            )
+            issue_credit_note(credit_note_id=credit_note.id, organization=self.org_a)
+            invoice.refresh_from_db()
+            self.assertEqual(invoice.status, "paid")
+
+            void_credit_note(credit_note_id=credit_note.id, organization=self.org_a)
+            invoice.refresh_from_db()
+            self.assertEqual(get_invoice_amount_due(invoice=invoice), Decimal("100.00"))
+            self.assertEqual(invoice.status, "sent")
+
+    def test_voiding_a_credit_on_a_part_paid_invoice_keeps_it_part_paid(self):
+        with tenant_context(organization_id=self.org_a.id):
+            invoice = self._make_invoice(unit_price=Decimal("100.00"))
+            record_payment(
+                organization=self.org_a, customer=self.customer, payment_date=datetime.date(2026, 4, 12),
+                amount=Decimal("30.00"), destination_account=self.bank_account,
+                allocations=[{"invoice": invoice, "amount": Decimal("30.00")}],
+            )
+            credit_note = create_credit_note(
+                organization=self.org_a, customer=self.customer, credit_note_date=datetime.date(2026, 4, 15),
+                source_invoice=invoice,
+                lines=[{
+                    "item": self.service_item, "quantity": Decimal("1"), "unit_price": Decimal("70.00"),
+                    "source_invoice_line": invoice.lines.first(),
+                }],
+            )
+            issue_credit_note(credit_note_id=credit_note.id, organization=self.org_a)
+            invoice.refresh_from_db()
+            self.assertEqual(invoice.status, "paid")
+
+            void_credit_note(credit_note_id=credit_note.id, organization=self.org_a)
+            invoice.refresh_from_db()
+            self.assertEqual(get_invoice_amount_due(invoice=invoice), Decimal("70.00"))
+            self.assertEqual(invoice.status, "partially_paid")
+
     def test_void_reverses_restock(self):
         with tenant_context(organization_id=self.org_a.id):
             invoice = self._make_invoice(item=self.product_item, quantity=Decimal("10"), unit_price=Decimal("50.00"))

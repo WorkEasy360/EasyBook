@@ -11,6 +11,7 @@ from banking.services.rules import (
     create_rule,
     find_matching_rule,
     rule_matches,
+    update_rule,
 )
 from banking.tests.base import SIGNED_MAPPING, BankingTestsBase
 from core.exceptions import ApplicationError
@@ -190,3 +191,50 @@ class RuleTenantTests(BankingTestsBase):
                     target_account=self.gl_bank_b,
                 )
             self.assertEqual(ctx.exception.get_codes(), "cross_org_reference")
+
+
+class RuleConstraintValidationTests(BankingTestsBase):
+    """Regression: these inputs reached the database's constraints and the API
+    answered 500 (IntegrityError). They are ordinary typing mistakes and must
+    come back as 400s with a code the form can show."""
+
+    def test_a_duplicate_rule_name_is_refused_with_a_code(self):
+        with tenant_context(organization_id=self.org_a.id):
+            create_rule(organization=self.org_a, name="Fees", description_contains="fee", target_account=self.gl_charges)
+            with self.assertRaises(ApplicationError) as ctx:
+                create_rule(organization=self.org_a, name="Fees", action=RuleAction.EXCLUDE, description_contains="x")
+            self.assertEqual(ctx.exception.get_codes(), "rule_name_taken")
+
+    def test_renaming_onto_another_rule_is_refused_but_keeping_the_name_is_not(self):
+        with tenant_context(organization_id=self.org_a.id):
+            create_rule(organization=self.org_a, name="Fees", description_contains="fee", target_account=self.gl_charges)
+            other = create_rule(
+                organization=self.org_a, name="Rent", description_contains="rent", target_account=self.gl_office
+            )
+            update_rule(rule=other, name="Rent", priority=5)
+            with self.assertRaises(ApplicationError) as ctx:
+                update_rule(rule=other, name="Fees")
+            self.assertEqual(ctx.exception.get_codes(), "rule_name_taken")
+
+    def test_a_reversed_amount_range_is_refused_with_a_code(self):
+        with tenant_context(organization_id=self.org_a.id):
+            with self.assertRaises(ApplicationError) as ctx:
+                create_rule(
+                    organization=self.org_a, name="Backwards", action=RuleAction.EXCLUDE,
+                    amount_min=Decimal("100.00"), amount_max=Decimal("50.00"),
+                )
+            self.assertEqual(ctx.exception.get_codes(), "rule_amount_range_invalid")
+            rule = create_rule(
+                organization=self.org_a, name="Ranged", action=RuleAction.EXCLUDE, amount_min=Decimal("10.00"),
+            )
+            with self.assertRaises(ApplicationError) as ctx:
+                update_rule(rule=rule, amount_max=Decimal("5.00"))
+            self.assertEqual(ctx.exception.get_codes(), "rule_amount_range_invalid")
+
+    def test_a_negative_minimum_is_refused_with_a_code(self):
+        with tenant_context(organization_id=self.org_a.id):
+            with self.assertRaises(ApplicationError) as ctx:
+                create_rule(
+                    organization=self.org_a, name="Negative", action=RuleAction.EXCLUDE, amount_min=Decimal("-1.00"),
+                )
+            self.assertEqual(ctx.exception.get_codes(), "rule_amount_min_negative")

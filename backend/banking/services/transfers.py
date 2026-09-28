@@ -5,6 +5,7 @@ from decimal import Decimal
 from django.db import transaction as db_transaction
 from django.utils import timezone
 
+from accounting.services.currency import assert_base_currency
 from accounting.services.posting import reverse_journal
 from accounts.services import allocate_sequence_number
 from audit.models import AuditLog
@@ -66,6 +67,7 @@ def record_transfer(
         )
 
     currency = currency or from_bank_account.currency
+    assert_base_currency(organization=organization, currency=currency)
     transfer_number = allocate_sequence_number(
         organization_id=organization.id, key=TRANSFER_NUMBER_SEQUENCE_KEY, prefix="TRF-"
     )

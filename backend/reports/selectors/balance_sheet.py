@@ -23,7 +23,7 @@ from decimal import Decimal
 from django.db.models import Sum
 
 from accounting.models.account import Account, AccountType
-from accounting.models.journal import JournalLine, JournalStatus
+from accounting.models.journal import LEDGER_STATUSES, JournalLine
 from reports.selectors.classification import classify_asset, classify_liability
 from reports.selectors.pnl import get_profit_and_loss
 
@@ -41,7 +41,7 @@ def closing_aggregates_by_account(*, organization, as_of_date, account_types):
     building block for its indirect-method working-capital movements."""
     qs = JournalLine.objects.filter(
         organization=organization,
-        journal_entry__status=JournalStatus.POSTED,
+        journal_entry__status__in=LEDGER_STATUSES,
         journal_entry__posting_date__lte=as_of_date,
         account__account_type__in=account_types,
     )

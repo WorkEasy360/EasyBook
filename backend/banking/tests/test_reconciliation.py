@@ -14,7 +14,7 @@ from banking.selectors import (
     get_statement_balance,
 )
 from banking.services.bank_accounts import update_bank_account
-from banking.services.matching import categorize_transaction, create_match, unmatch
+from banking.services.matching import categorize_transaction, create_match, uncategorize_transaction, unmatch
 from banking.services.reconciliation import (
     abandon_reconciliation,
     complete_reconciliation,
@@ -78,6 +78,16 @@ class BalanceTests(BankingTestsBase):
             )
             self.assertEqual(get_book_balance(bank_account=self.card), Decimal("-4500.00"))
             self.assertEqual(get_statement_balance(bank_account=self.card), Decimal("-4500.00"))
+
+    def test_book_balance_returns_to_zero_after_a_categorization_is_reversed(self):
+        with tenant_context(organization_id=self.org_a.id):
+            charge = self._txn(amount="-4500.00", bank_account=self.card, description="AWS")
+            match = categorize_transaction(
+                transaction_id=charge.id, organization=self.org_a, account=self.gl_office,
+                actor=self.user_a,
+            )
+            uncategorize_transaction(match_id=match.id, organization=self.org_a, actor=self.user_a)
+            self.assertEqual(get_book_balance(bank_account=self.card), Decimal("0"))
 
     def test_excluded_lines_leave_the_statement_balance(self):
         with tenant_context(organization_id=self.org_a.id):

@@ -1,0 +1,282 @@
+# Every value here is either a safe, documented default or REQUIRED with no
+# default (Terraform will prompt/fail rather than silently guess) — see each
+# variable's description for which decisions are still the product/business's
+# to make (phase 12 section 3: classify before building).
+
+variable "project_name" {
+  description = "Short slug used as a prefix for every resource name and tag."
+  type        = string
+  default     = "easybook"
+}
+
+variable "environment" {
+  description = "Deployment environment name (staging, production, ...). Never share resources across environments (root CLAUDE.md global rule 1)."
+  type        = string
+
+  validation {
+    condition     = contains(["staging", "production"], var.environment)
+    error_message = "environment must be \"staging\" or \"production\" — a separate tfvars/workspace per environment, never a shared one (phase 12 section 5)."
+  }
+}
+
+variable "aws_region" {
+  description = "AWS region. Defaults to Mumbai (ap-south-1) — EasyBook is a GST/India-compliance-focused product; override if the business targets a different primary region."
+  type        = string
+  default     = "ap-south-1"
+}
+
+variable "vpc_cidr" {
+  description = "CIDR block for the VPC."
+  type        = string
+  default     = "10.20.0.0/16"
+}
+
+variable "availability_zone_count" {
+  description = "Number of AZs to spread public/private subnets across. 2 is the minimum for anything calling itself highly available."
+  type        = number
+  default     = 2
+
+  validation {
+    condition     = var.availability_zone_count >= 2
+    error_message = "At least 2 AZs are required for HA — a single-AZ deployment is not production-grade."
+  }
+}
+
+variable "single_nat_gateway" {
+  description = "true = one NAT gateway shared by all private subnets (cheaper, single point of failure for outbound internet from private subnets). false = one NAT gateway per AZ (production-recommended, costs more). Decide per environment — staging can reasonably use true."
+  type        = bool
+  default     = true
+}
+
+# --- Database ----------------------------------------------------------------
+
+variable "db_engine_version" {
+  description = "PostgreSQL major.minor version. Verify against the current RDS-supported version list before changing (phase 12 section 13)."
+  type        = string
+  default     = "16.10"
+}
+
+variable "db_instance_class" {
+  description = "RDS instance class. db.t4g.medium is a reasonable small-production starting point, not a load-tested recommendation — see phase 12 section 59-60."
+  type        = string
+  default     = "db.t4g.medium"
+}
+
+variable "db_allocated_storage_gb" {
+  type    = number
+  default = 100
+}
+
+variable "db_max_allocated_storage_gb" {
+  description = "Ceiling for RDS storage autoscaling."
+  type        = number
+  default     = 500
+}
+
+variable "db_multi_az" {
+  description = "Multi-AZ RDS (phase 12 section 13). Should be true for production; a business/cost decision for staging."
+  type        = bool
+  default     = false
+}
+
+variable "db_backup_retention_days" {
+  type    = number
+  default = 7
+}
+
+variable "db_deletion_protection" {
+  type    = bool
+  default = true
+}
+
+variable "db_name" {
+  type    = string
+  default = "easybook"
+}
+
+# --- Redis ---------------------------------------------------------------
+
+variable "redis_node_type" {
+  type    = string
+  default = "cache.t4g.small"
+}
+
+variable "redis_multi_az" {
+  description = "Multi-AZ ElastiCache replication group with automatic failover. Production should be true; a cost decision for staging."
+  type        = bool
+  default     = false
+}
+
+# --- ECS / containers ------------------------------------------------------
+
+variable "container_image" {
+  description = "Full ECR image URI (repository:tag or repository@digest) to deploy. No default — CI/CD supplies this per build, it must never silently fall back to :latest (phase 12 section 48-49)."
+  type        = string
+}
+
+variable "ecs_services" {
+  description = <<-EOT
+    One entry per backend/Dockerfile-built ECS service (phase 12 section 11).
+    `command` overrides the Dockerfile's default CMD; null keeps it (the "api"
+    service). `desired_count` of 0 is valid for a service you want defined but
+    not yet running. Celery Beat must stay at desired_count <= 1 — see its
+    entry's comment and phase 12 section 11/18.
+  EOT
+  type = map(object({
+    command          = optional(list(string))
+    cpu              = number
+    memory           = number
+    desired_count    = number
+    is_load_balanced = bool
+  }))
+
+  default = {
+    api = {
+      command          = null
+      cpu              = 512
+      memory           = 1024
+      desired_count    = 2
+      is_load_balanced = true
+    }
+    worker-critical = {
+      command          = ["celery", "-A", "config", "worker", "--loglevel=info", "--queues=critical", "--concurrency=4"]
+      cpu              = 512
+      memory           = 1024
+      desired_count    = 2
+      is_load_balanced = false
+    }
+    worker-default = {
+      command          = ["celery", "-A", "config", "worker", "--loglevel=info", "--queues=celery", "--concurrency=4"]
+      cpu              = 512
+      memory           = 1024
+      desired_count    = 2
+      is_load_balanced = false
+    }
+    worker-heavy = {
+      command          = ["celery", "-A", "config", "worker", "--loglevel=info", "--queues=heavy", "--concurrency=2"]
+      cpu              = 1024
+      memory           = 2048
+      desired_count    = 1
+      is_load_balanced = false
+    }
+    worker-ai = {
+      command          = ["celery", "-A", "config", "worker", "--loglevel=info", "--queues=ai", "--concurrency=2"]
+      cpu              = 1024
+      memory           = 2048
+      desired_count    = 1
+      is_load_balanced = false
+    }
+    beat = {
+      # Exactly one replica, always — running two Beat processes double-fires
+      # every schedule entry (phase 12 section 11/18; config/settings/base.py's
+      # CELERY_BEAT_SCHEDULE has no distributed lock, by design: the tasks it
+      # schedules are idempotent per-occurrence, not per-invocation-count).
+      command          = ["celery", "-A", "config", "beat", "--loglevel=info"]
+      cpu              = 256
+      memory           = 512
+      desired_count    = 1
+      is_load_balanced = false
+    }
+  }
+
+  validation {
+    condition     = try(var.ecs_services["beat"].desired_count, 1) <= 1
+    error_message = "The beat service must never run more than 1 replica (see its entry's comment)."
+  }
+}
+
+# --- Domain / TLS / CDN ----------------------------------------------------
+
+variable "domain_name" {
+  description = <<-EOT
+    The one HTTPS hostname users reach (staging included), e.g.
+    staging.books.example.com. Required: there is no plaintext mode. You must
+    control its DNS (to point it at the ALB) and hold a validated ACM
+    certificate for it in this stack's region (var.acm_certificate_arn). A
+    bare hostname: no scheme, port, path or wildcard. Django's ALLOWED_HOSTS,
+    CSRF_TRUSTED_ORIGINS and CORS, and the frontend's API_BASE_URL, all derive
+    from it.
+  EOT
+  type        = string
+
+  validation {
+    condition     = can(regex("^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\\.)+[a-z]{2,63}$", var.domain_name))
+    error_message = "domain_name must be a lowercase DNS hostname such as staging.books.example.com (no scheme, port, path or wildcard)."
+  }
+}
+
+variable "acm_certificate_arn" {
+  description = "ARN of an ISSUED ACM certificate covering var.domain_name, in this stack's region. Issued and DNS-validated out of band before the first apply. Required: the ALB serves HTTPS only."
+  type        = string
+
+  validation {
+    condition     = can(regex("^arn:aws:acm:[a-z0-9-]+:[0-9]{12}:certificate/[A-Za-z0-9-]+$", var.acm_certificate_arn))
+    error_message = "acm_certificate_arn must be an ACM certificate ARN (arn:aws:acm:<region>:<account>:certificate/<id>)."
+  }
+}
+
+variable "frontend_container_image" {
+  description = "Full ECR image URI of the frontend (frontend/Dockerfile) for this release, tagged with the same commit SHA as container_image. No default, never :latest."
+  type        = string
+}
+
+variable "web_service" {
+  description = "Size and count of the Next.js frontend service (frontend/Dockerfile)."
+  type = object({
+    cpu           = number
+    memory        = number
+    desired_count = number
+  })
+  default = {
+    cpu           = 256
+    memory        = 512
+    desired_count = 2
+  }
+}
+
+# --- Alerting --------------------------------------------------------------
+
+variable "alerts_email" {
+  description = "Email address subscribed to the CloudWatch alarm SNS topic (phase 12 section 45). Empty = topic created with no subscriber; add one manually or via a follow-up apply once decided."
+  type        = string
+  default     = ""
+}
+
+# --- Tags --------------------------------------------------------------------
+
+variable "extra_tags" {
+  description = "Additional tags merged onto every resource (e.g. cost-center)."
+  type        = map(string)
+  default     = {}
+}
+
+# --- GitHub Actions OIDC (github_oidc.tf) ----------------------------------
+
+variable "github_repository" {
+  description = "owner/name of the GitHub repository whose workflows may assume the release (and, if enabled, deploy) role."
+  type        = string
+  default     = "WorkEasy360/EasyBook"
+
+  validation {
+    condition     = can(regex("^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$", var.github_repository))
+    error_message = "github_repository must be owner/name."
+  }
+}
+
+variable "github_oidc_provider_arn" {
+  description = "ARN of an EXISTING GitHub OIDC provider in this account, if one already exists (only one per issuer URL is allowed). Empty = this stack creates it."
+  type        = string
+  default     = ""
+}
+
+variable "enable_github_deploy_role" {
+  description = "Create the GitHub deploy role. Leave false until the protected GitHub environment (var.github_deploy_environment) exists with required reviewers: automatic deploys are not enabled yet."
+  type        = bool
+  default     = false
+}
+
+variable "github_deploy_environment" {
+  description = "The protected GitHub environment (with required reviewers) whose jobs alone may assume the deploy role."
+  type        = string
+  default     = "staging"
+}

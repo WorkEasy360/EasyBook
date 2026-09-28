@@ -15,11 +15,13 @@ OWNS
 
 INVARIANTS
 - Decimal only, never float.
+- Single currency only, until real multi-currency accounting exists: `services/currency.py::assert_base_currency` refuses any transaction whose currency is not the organization's `default_currency` or whose `exchange_rate` is not 1. Enforced at the ledger (`create_draft_journal`, and again in `post_journal` so a pre-guard draft cannot slip through) and in every document/party service. Posting never carried a document's exchange rate into its journal, so a USD 1,000 invoice posted 1,000 in base currency — see `tests/test_foreign_currency.py`.
 - `debit == credit` enforced at POST time (`services/posting.post_journal`), not at draft creation — drafts may be unbalanced work-in-progress.
 - No mutable authoritative balance field anywhere (no `account.balance`). General Ledger/Trial Balance are always derived from posted `JournalLine` rows — see `selectors.py` docstring for why there is deliberately no separate ledger projection table.
 - Posted journals/lines are immutable: `JournalEntry.save()`/`delete()` and `JournalLine.save()`/`delete()` raise `ValueError` outside the allowed DRAFT→POSTED/POSTED→REVERSED transitions. Corrections go through `reverse_journal()`, never direct edits.
 - `post_journal()` is idempotent by construction: posting an already-POSTED journal is a no-op returning the existing journal (locked via `select_for_update()`), not a second Idempotency-Key system layered on top.
 - A journal can be reversed at most once — `JournalEntry.reverses` is a `OneToOneField`.
+- Ledger-derived figures (GL, Trial Balance, every report, bank book balance) filter `journal_entry__status__in=LEDGER_STATUSES` (POSTED + REVERSED), never `status=POSTED` alone: a reversed original stays a fact of its own period and its POSTED reversal cancels it. Filtering POSTED only drops the original but keeps the mirror, reporting minus the original instead of zero.
 - Journal numbers are allocated at POST time via `accounts.services.allocate_sequence_number`, never at draft creation.
 - Every accounting table is a `TenantScopedModel` with a matching RLS migration (see `core/CLAUDE.md`) — no exceptions.
 - Authoritative accounting numbers (balances, journal totals, trial balance) are never computed by AI — see root `CLAUDE.md` pipeline rule.

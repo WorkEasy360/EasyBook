@@ -8,6 +8,10 @@ that person is paid. `VIEW_ALL_TIMESHEETS` is the permission that widens the
 view, and `_scope_time_entries` is the single place the narrowing happens.
 """
 
+import datetime
+import uuid
+from decimal import Decimal
+
 from rest_framework import generics
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -77,6 +81,17 @@ def _get_project_or_404(pk) -> Project:
 
 # ------------------------------------------------------------ projects
 
+
+
+def _query_date(request, name: str):
+    """A YYYY-MM-DD query parameter, None when absent, 400 when malformed."""
+    value = request.query_params.get(name)
+    if not value:
+        return None
+    try:
+        return datetime.date.fromisoformat(value)
+    except ValueError:
+        raise ApplicationError(f"Invalid {name} '{value}', expected YYYY-MM-DD.", code="invalid_date")
 
 class ProjectListCreateView(OrganizationScopedMixin, generics.ListCreateAPIView):
     permission_classes = [HasOrgPermission]
@@ -160,7 +175,12 @@ class ProjectProfitabilityView(OrganizationScopedMixin, APIView):
     required_permission = Permission.VIEW_ALL_TIMESHEETS
 
     def get(self, request, pk):
-        return Response(get_project_profitability(project=_get_project_or_404(pk)))
+        report = get_project_profitability(project=_get_project_or_404(pk))
+        # Decimal -> str, never float. DRF's JSON encoder turns a bare Decimal
+        # into a float, so returning the selector dict as-is put money on the
+        # wire as `5850.0` — the same figures reports/projects/profitability
+        # already sends as strings (reports.selectors.params.money).
+        return Response({key: str(value) if isinstance(value, Decimal) else value for key, value in report.items()})
 
 
 # ------------------------------------------------------------- members
@@ -275,16 +295,23 @@ class TimeEntryListCreateView(OrganizationScopedMixin, generics.ListCreateAPIVie
 
     def get_queryset(self):
         qs = TimeEntry.objects.select_related("project", "task")
+        # Each filter is validated before it reaches the ORM: a malformed id or
+        # date raised Django's ValidationError inside the query and returned a
+        # 500 instead of telling the caller which parameter was wrong.
         project_id = self.request.query_params.get("project")
         if project_id:
+            try:
+                uuid.UUID(project_id)
+            except ValueError:
+                raise ApplicationError("project must be a valid id.", code="invalid_project_id")
             qs = qs.filter(project_id=project_id)
         status_filter = self.request.query_params.get("status")
         if status_filter:
             qs = qs.filter(status=status_filter)
-        from_date = self.request.query_params.get("from_date")
+        from_date = _query_date(self.request, "from_date")
         if from_date:
             qs = qs.filter(entry_date__gte=from_date)
-        to_date = self.request.query_params.get("to_date")
+        to_date = _query_date(self.request, "to_date")
         if to_date:
             qs = qs.filter(entry_date__lte=to_date)
         return _scope_time_entries(self.request, qs)

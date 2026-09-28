@@ -1,0 +1,48 @@
+name: Security
+
+# Secret scan over the full git history. The gitleaks CLI is downloaded from
+# its official release and verified against a pinned SHA-256 before it runs
+# (the gitleaks GitHub Action needs a paid license for organization repos).
+# Justified suppressions live in .gitleaksignore, each with its reason.
+# Other security gates run in their own workflows: bandit and pip-audit
+# (backend-ci), npm audit (frontend-ci), Trivy image scans (backend-ci and
+# frontend-ci).
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: security-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  secrets:
+    name: Secret scan (gitleaks, full history)
+    runs-on: ubuntu-latest
+    env:
+      GITLEAKS_VERSION: 8.30.1
+      # SHA-256 of gitleaks_8.30.1_linux_x64.tar.gz, from the release's own
+      # checksums file, verified 2026-09-24.
+      GITLEAKS_SHA256: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09  # v5
+        with:
+          fetch-depth: 0
+
+      - name: Install gitleaks (checksum-verified)
+        run: |
+          curl -sSfLo gitleaks.tar.gz \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          echo "${GITLEAKS_SHA256}  gitleaks.tar.gz" | sha256sum -c -
+          tar -xzf gitleaks.tar.gz gitleaks
+          ./gitleaks version
+
+      - name: Scan every commit
+        run: ./gitleaks git . --redact --no-banner --exit-code 1

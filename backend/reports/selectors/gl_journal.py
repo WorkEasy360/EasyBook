@@ -9,7 +9,7 @@ Journal report is new: it is just a filtered, paginated view over
 `accounting.JournalEntry` — no new posting/balance logic.
 """
 
-from accounting.models.journal import JournalEntry, JournalStatus
+from accounting.models.journal import LEDGER_STATUSES, JournalEntry
 from accounting.selectors import get_account_running_ledger
 
 
@@ -29,11 +29,12 @@ def get_journal_report_queryset(
     created_by=None,
     posted_by=None,
 ):
-    """Ordered, filterable JournalEntry queryset. Defaults to POSTED only —
-    financial reporting normally excludes DRAFT/unposted entries (PHASE 8
-    spec §8) — an explicit `status` opts into a different view."""
+    """Ordered, filterable JournalEntry queryset. Defaults to ledger entries
+    (POSTED and REVERSED — a reversed original stays beside its reversal) —
+    financial reporting excludes DRAFT/unposted entries (PHASE 8 spec §8) —
+    an explicit `status` opts into a different view."""
     qs = JournalEntry.objects.filter(organization=organization).prefetch_related("lines")
-    qs = qs.filter(status=status) if status else qs.filter(status=JournalStatus.POSTED)
+    qs = qs.filter(status=status) if status else qs.filter(status__in=LEDGER_STATUSES)
     if from_date is not None:
         qs = qs.filter(posting_date__gte=from_date)
     if to_date is not None:

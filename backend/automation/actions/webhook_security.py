@@ -11,6 +11,13 @@ inherent to any pre-request DNS check; blocking the metadata/private ranges
 at both checkpoints is the primary, documented defense here, matching what
 a real egress proxy would enforce and consistent with this codebase not
 inventing infrastructure beyond what's justified (root CLAUDE.md).
+
+A validated URL redirecting the actual request to an unvalidated one (e.g.
+to 169.254.169.254) is NOT a residual risk here: `webhook_sender.py`'s
+`_OPENER` refuses every redirect rather than following it, so a check done
+once here at the original URL cannot be bypassed by a 3xx response later —
+verified against a real HTTP server returning a redirect to the metadata
+address; the default urllib opener does follow it, the hardened one does not.
 """
 
 import ipaddress

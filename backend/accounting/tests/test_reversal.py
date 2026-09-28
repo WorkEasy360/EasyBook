@@ -5,6 +5,7 @@ from django.test import TestCase
 
 from accounting.models.account import AccountType
 from accounting.models.journal import JournalStatus
+from accounting.selectors import get_account_activity, get_account_running_ledger, get_trial_balance
 from accounting.services.accounts import create_account
 from accounting.services.journals import create_draft_journal
 from accounting.services.posting import post_journal, reverse_journal
@@ -78,6 +79,51 @@ class ReversalTests(TestCase):
             reverse_journal(journal_id=self.original.id, organization=self.org, actor=self.user)
             with self.assertRaises(ApplicationError):
                 reverse_journal(journal_id=self.original.id, organization=self.org, actor=self.user)
+
+    def test_same_period_reversal_nets_ledger_balances_to_zero(self):
+        """Regression: ledger selectors counted only POSTED journals, so a
+        reversal dropped the (now REVERSED) original but kept its mirror —
+        every balance showed minus the original instead of zero."""
+        april_30 = datetime.date(2026, 4, 30)
+        with tenant_context(organization_id=self.org.id):
+            reverse_journal(
+                journal_id=self.original.id, organization=self.org, actor=self.user,
+                posting_date=datetime.date(2026, 4, 10),
+            )
+            expense = get_account_activity(account=self.expense, to_date=april_30)
+            bank = get_account_activity(account=self.bank, to_date=april_30)
+            trial_balance = get_trial_balance(organization=self.org, as_of_date=april_30)
+
+        self.assertEqual(expense["period_debit"], Decimal("1000.00"))
+        self.assertEqual(expense["period_credit"], Decimal("1000.00"))
+        self.assertEqual(expense["closing_balance"], Decimal("0"))
+        self.assertEqual(bank["closing_balance"], Decimal("0"))
+        self.assertTrue(trial_balance["is_balanced"])
+        self.assertEqual(trial_balance["total_period_debit"], Decimal("2000.00"))
+        self.assertEqual(trial_balance["total_closing_debit"], Decimal("0"))
+
+    def test_later_period_reversal_leaves_the_original_period_unchanged(self):
+        """A posted journal is an immutable fact of its own period: reversing
+        it in May must not rewrite April's already-reported figures."""
+        with tenant_context(organization_id=self.org.id):
+            reverse_journal(
+                journal_id=self.original.id, organization=self.org, actor=self.user,
+                posting_date=datetime.date(2026, 5, 5),
+            )
+            april = get_account_activity(
+                account=self.expense, from_date=datetime.date(2026, 4, 1), to_date=datetime.date(2026, 4, 30)
+            )
+            may = get_account_activity(
+                account=self.expense, from_date=datetime.date(2026, 5, 1), to_date=datetime.date(2026, 5, 31)
+            )
+            ledger = get_account_running_ledger(account=self.expense, to_date=datetime.date(2026, 5, 31))
+
+        self.assertEqual(april["closing_balance"], Decimal("1000.00"))
+        self.assertEqual(may["opening_balance"], Decimal("1000.00"))
+        self.assertEqual(may["period_credit"], Decimal("1000.00"))
+        self.assertEqual(may["closing_balance"], Decimal("0"))
+        self.assertEqual([entry["running_balance"] for entry in ledger["entries"]], [Decimal("1000.00"), Decimal("0")])
+        self.assertEqual(ledger["closing_balance"], Decimal("0"))
 
     def test_cannot_reverse_a_draft_journal(self):
         with tenant_context(organization_id=self.org.id):

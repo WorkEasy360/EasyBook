@@ -12,6 +12,7 @@ from django.db import transaction
 from django.utils import timezone
 
 from accounting.models.account import AccountType
+from accounting.services.currency import assert_base_currency
 from accounting.services.posting import reverse_journal
 from accounts.services import allocate_sequence_number
 from audit.models import AuditLog
@@ -139,6 +140,7 @@ def create_expense(
 
     if currency is None:
         currency = vendor.currency if vendor is not None else organization.default_currency
+    assert_base_currency(organization=organization, currency=currency, exchange_rate=exchange_rate)
     tax_treatment = tax_treatment or resolve_document_tax(
         organization=organization, party=vendor, place_of_supply=place_of_supply
     )
@@ -195,6 +197,9 @@ def update_expense(*, expense: Expense, actor=None, **fields) -> Expense:
 
     fields.pop("tax_amount", None)
     fields.pop("total", None)
+    assert_base_currency(
+        organization=expense.organization, currency=fields.get("currency"), exchange_rate=fields.get("exchange_rate")
+    )
 
     changes = {}
     for field, value in fields.items():

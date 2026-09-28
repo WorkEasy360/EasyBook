@@ -35,7 +35,8 @@ def upload_pdf_with_ocr(test, text, confidence=0.95, title="Scanned contract"):
                 provider="test", provider_version="1", raw_text=text, confidence=confidence,
             )
             provider.return_value.name, provider.return_value.version = "test", "1"
-            request_ocr(document=document)
+            with test.captureOnCommitCallbacks(execute=True):
+                request_ocr(document=document)
         document.refresh_from_db()
     return document
 

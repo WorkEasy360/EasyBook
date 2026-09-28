@@ -1,3 +1,9 @@
+# Explicit project name: without it Compose names the project after this
+# folder (`infrastructure`), which any other checkout with an
+# infrastructure/ folder shares — its `up`/`down` would then act on our
+# containers and vice versa.
+name: easybook
+
 services:
   postgres:
     # The official postgres:16 image (same Debian trixie base, same PostgreSQL
@@ -5,12 +11,19 @@ services:
     # infrastructure/CLAUDE.md. Same major version and libc as the previous
     # postgres:16 image, so an existing data volume is reused as-is.
     image: pgvector/pgvector:pg16-trixie
+    # Come back by ourselves after Docker Desktop restarts / the machine
+    # sleeps or reboots. Without this the default policy is `no`: the daemon
+    # stops the container (exit 255) and never starts it again, so the next
+    # `make run` hangs on a DB connect that has nothing to connect to.
+    restart: unless-stopped
     environment:
       POSTGRES_DB: easybook
       POSTGRES_USER: easybook
       POSTGRES_PASSWORD: easybook
     ports:
-      - "5442:5432"
+      # 5472, not 5432/5442: other local projects hold 5432, 5433 and 5442
+      # (workeasy360). Bound to loopback so the dev DB isn't exposed on the LAN.
+      - "127.0.0.1:5472:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./postgres-init:/docker-entrypoint-initdb.d
@@ -22,8 +35,9 @@ services:
 
   redis:
     image: redis:7
+    restart: unless-stopped
     ports:
-      - "6390:6379"
+      - "127.0.0.1:6390:6379"
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
@@ -32,3 +46,6 @@ services:
 
 volumes:
   postgres_data:
+    # Keep the volume created under the old folder-derived project name so
+    # renaming the project doesn't orphan existing local data.
+    name: infrastructure_postgres_data

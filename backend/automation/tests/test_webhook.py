@@ -1,3 +1,5 @@
+import http.server
+import threading
 from unittest import mock
 
 from django.test import TestCase
@@ -50,6 +52,45 @@ class WebhookSecurityTests(TestCase):
         with mock.patch("automation.actions.webhook_security.socket.getaddrinfo", side_effect=socket.gaierror):
             with self.assertRaises(ApplicationError):
                 validate_webhook_url("https://does-not-resolve.example/hook")
+
+
+class WebhookRedirectTests(TestCase):
+    """`webhook_security.validate_webhook_url` only checks the URL once,
+    before `_http_send` ever runs — a validated endpoint that responds with
+    a redirect could otherwise point the actual request at an unvalidated
+    target (e.g. the cloud metadata address) entirely unchecked. Uses a real
+    HTTP server on loopback (127.0.0.1, not an external endpoint — phase
+    section 90's "never call a real external endpoint" is about third-party
+    services, not testing this module's own transport safety)."""
+
+    def test_http_send_does_not_follow_a_redirect(self):
+        from automation.actions.webhook_sender import _http_send
+
+        class RedirectingHandler(http.server.BaseHTTPRequestHandler):
+            def do_POST(self):
+                self.send_response(302)
+                self.send_header("Location", "http://169.254.169.254/latest/meta-data/")
+                self.end_headers()
+
+            def log_message(self, *args):
+                pass
+
+        server = http.server.HTTPServer(("127.0.0.1", 0), RedirectingHandler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            response = _http_send(
+                url=f"http://127.0.0.1:{server.server_port}/hook",
+                payload=b"{}",
+                headers={"Content-Type": "application/json"},
+                timeout=3,
+            )
+            # The redirect itself is the recorded outcome — not silently
+            # swallowed, and critically, never followed to 169.254.169.254.
+            self.assertEqual(response.http_status, 302)
+        finally:
+            server.shutdown()
+            thread.join(timeout=2)
 
 
 class WebhookActionRBACTests(TestCase):

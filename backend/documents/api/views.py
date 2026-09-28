@@ -43,6 +43,7 @@ from documents.services.links import create_link, delete_link
 from documents.services.ocr import request_ocr
 from documents.services.review import approve_review, reject_review
 from documents.services.uploads import archive_document, update_document, upload_document
+from documents.services.validation import max_upload_size
 from documents.storage.local import LocalDocumentStorage
 
 
@@ -84,6 +85,15 @@ class DocumentUploadView(OrganizationScopedMixin, APIView):
             folder = _get_or_404(DocumentFolder, data["folder_id"], "Folder")
 
         uploaded = data["file"]
+        # Checked against UploadedFile.size (populated by the multipart
+        # parser already) BEFORE .read() — otherwise an oversized upload is
+        # pulled fully into memory before validate_upload() ever gets a
+        # chance to reject it on size (documents/services/validation.py).
+        limit = max_upload_size(uploaded.name)
+        if uploaded.size > limit:
+            raise ApplicationError(
+                f"File exceeds the maximum allowed size of {limit} bytes.", code="file_too_large"
+            )
         document = upload_document(
             organization=request.organization,
             uploaded_by=request.user,

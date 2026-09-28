@@ -2,6 +2,7 @@ from decimal import Decimal
 
 from django.db import transaction
 
+from accounting.services.currency import assert_base_currency
 from accounts.services import allocate_sequence_number
 from audit.models import AuditLog
 from audit.services import record as record_audit
@@ -56,6 +57,7 @@ def create_sales_order(
         raise ApplicationError("A sales order needs at least one line.", code="sales_order_no_lines")
 
     currency = currency or customer.currency
+    assert_base_currency(organization=organization, currency=currency, exchange_rate=exchange_rate)
     tax_treatment = tax_treatment or resolve_document_tax(
         organization=organization, party=customer, place_of_supply=place_of_supply
     )

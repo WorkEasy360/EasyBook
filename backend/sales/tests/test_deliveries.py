@@ -15,6 +15,7 @@ from items.services.items import create_item
 from items.services.units import create_unit
 from sales.models.delivery import DeliveryChallan, DeliveryChallanStatus
 from sales.models.sales_order import SalesOrderStatus
+from sales.selectors import get_fulfilled_quantity
 from sales.services.customers import create_customer
 from sales.services.deliveries import cancel_delivery, create_delivery_challan, dispatch_delivery, mark_delivered
 from sales.services.sales_orders import confirm_order, create_sales_order
@@ -237,6 +238,33 @@ class DeliveryChallanTests(TestCase):
                     lines=[{"item": self.item, "quantity": Decimal("11"), "source_order_line": order_line}],
                 )
             self.assertEqual(ctx.exception.get_codes(), "over_fulfillment")
+
+    def test_second_draft_cannot_dispatch_past_the_ordered_quantity(self):
+        # Regression: both drafts passed the create-time check (drafts are not
+        # counted as fulfilled) and both dispatched, shipping the order twice.
+        with tenant_context(organization_id=self.org_a.id):
+            order = create_sales_order(
+                organization=self.org_a, customer=self.customer, order_date="2026-04-01",
+                lines=[{"item": self.item, "quantity": Decimal("10"), "unit_price": Decimal("50.00")}],
+            )
+            confirm_order(order_id=order.id, organization=self.org_a)
+            order.refresh_from_db()
+            order_line = order.lines.first()
+            drafts = [
+                create_delivery_challan(
+                    organization=self.org_a, customer=self.customer, warehouse=self.warehouse,
+                    challan_date="2026-04-05", source_sales_order=order,
+                    lines=[{"item": self.item, "quantity": Decimal("10"), "source_order_line": order_line}],
+                )
+                for _ in range(2)
+            ]
+            dispatch_delivery(challan_id=drafts[0].id, organization=self.org_a)
+            with self.assertRaises(ApplicationError) as ctx:
+                dispatch_delivery(challan_id=drafts[1].id, organization=self.org_a)
+            self.assertEqual(ctx.exception.get_codes(), "over_fulfillment")
+            drafts[1].refresh_from_db()
+            self.assertEqual(drafts[1].status, DeliveryChallanStatus.DRAFT)
+            self.assertEqual(get_fulfilled_quantity(sales_order_line=order_line), Decimal("10"))
 
     def test_cannot_deliver_against_unconfirmed_order(self):
         with tenant_context(organization_id=self.org_a.id):

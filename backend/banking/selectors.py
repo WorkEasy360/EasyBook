@@ -25,7 +25,7 @@ from decimal import Decimal
 
 from django.db.models import Sum
 
-from accounting.models.journal import JournalLine, JournalStatus
+from accounting.models.journal import LEDGER_STATUSES, JournalLine
 from banking.models.match import COUNTERPART_FIELDS, BankTransactionMatch
 from banking.models.statement import BankTransaction, BankTransactionStatus
 
@@ -49,7 +49,7 @@ def get_book_balance(*, bank_account, as_of=None) -> Decimal:
     """Ledger balance of the linked GL account, signed as a statement would
     show it (debits positive). Derived from posted journal lines only."""
     qs = JournalLine.objects.filter(
-        account_id=bank_account.account_id, journal_entry__status=JournalStatus.POSTED
+        account_id=bank_account.account_id, journal_entry__status__in=LEDGER_STATUSES
     )
     if as_of is not None:
         qs = qs.filter(journal_entry__posting_date__lte=as_of)

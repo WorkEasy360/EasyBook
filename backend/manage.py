@@ -15,6 +15,13 @@ def main():
             "available on your PYTHONPATH environment variable? Did you "
             "forget to activate a virtual environment?"
         ) from exc
+    # Bare `runserver` binds 8001, not Django's 8000 (another local project
+    # holds 8000). The frontend's API_BASE_URL defaults to 8001, so the two
+    # agree without anyone remembering a port. DJANGO_RUNSERVER_PORT or an
+    # explicit `runserver <port>` still overrides it.
+    from django.core.management.commands import runserver
+
+    runserver.Command.default_port = os.environ.get("DJANGO_RUNSERVER_PORT", "8001")
     execute_from_command_line(sys.argv)
 
 

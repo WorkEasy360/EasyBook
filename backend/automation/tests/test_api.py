@@ -124,9 +124,11 @@ class AutomationExecutionAPITests(APITestCase):
         rule_id = self._create_and_activate_manual_rule()
 
         self.client.force_authenticate(user=self.owner_a)
-        run_response = self.client.post(f"/api/v1/automation/rules/{rule_id}/run/", **self._headers(self.org_a))
+        with self.captureOnCommitCallbacks(execute=True):
+            run_response = self.client.post(f"/api/v1/automation/rules/{rule_id}/run/", **self._headers(self.org_a))
         self.assertEqual(run_response.status_code, 201, run_response.data)
-        self.assertEqual(run_response.data["status"], "succeeded")
+        # Enqueued on commit, so the response can only ever report it pending.
+        self.assertEqual(run_response.data["status"], "pending")
         self.assertEqual(run_response.data["trigger_source"], "manual")
         execution_id = run_response.data["id"]
 
@@ -136,6 +138,7 @@ class AutomationExecutionAPITests(APITestCase):
 
         detail_response = self.client.get(f"/api/v1/automation/executions/{execution_id}/", **self._headers(self.org_a))
         self.assertEqual(detail_response.status_code, 200)
+        self.assertEqual(detail_response.data["status"], "succeeded")
         self.assertEqual(len(detail_response.data["steps"]), 1)
         self.assertEqual(detail_response.data["steps"][0]["status"], "succeeded")
 
@@ -162,10 +165,67 @@ class AutomationExecutionAPITests(APITestCase):
     def test_retry_endpoint_rejects_a_succeeded_execution(self):
         rule_id = self._create_and_activate_manual_rule()
         self.client.force_authenticate(user=self.owner_a)
-        run_response = self.client.post(f"/api/v1/automation/rules/{rule_id}/run/", **self._headers(self.org_a))
+        with self.captureOnCommitCallbacks(execute=True):
+            run_response = self.client.post(f"/api/v1/automation/rules/{rule_id}/run/", **self._headers(self.org_a))
         execution_id = run_response.data["id"]
 
         retry_response = self.client.post(
             f"/api/v1/automation/executions/{execution_id}/retry/", **self._headers(self.org_a)
         )
         self.assertEqual(retry_response.status_code, 400)
+
+    # --- Regressions -------------------------------------------------------
+
+    def test_invalid_rule_filter_is_a_validation_error_not_a_500(self):
+        self.client.force_authenticate(user=self.owner_a)
+        response = self.client.get("/api/v1/automation/executions/", {"rule": "notauuid"}, **self._headers(self.org_a))
+        self.assertEqual(response.status_code, 400)
+
+    def test_record_based_manual_run_requires_a_valid_entity_id(self):
+        # Previously both requests returned 201 and left a permanently
+        # pending execution behind.
+        self.client.force_authenticate(user=self.owner_a)
+        create = self.client.post(
+            "/api/v1/automation/rules/",
+            {
+                "name": "Posted invoice notify", "trigger_type": "invoice.posted", "conditions": [],
+                "actions": [{"action_id": "send_notification", "config": {"message": "posted"}}],
+            },
+            format="json", **self._headers(self.org_a),
+        )
+        self.assertEqual(create.status_code, 201, create.data)
+        rule_id = create.data["id"]
+        self.client.post(f"/api/v1/automation/rules/{rule_id}/activate/", **self._headers(self.org_a))
+
+        missing = self.client.post(f"/api/v1/automation/rules/{rule_id}/run/", {}, format="json", **self._headers(self.org_a))
+        self.assertEqual(missing.status_code, 400, missing.data)
+        malformed = self.client.post(
+            f"/api/v1/automation/rules/{rule_id}/run/", {"entity_id": "not-a-uuid"}, format="json",
+            **self._headers(self.org_a),
+        )
+        self.assertEqual(malformed.status_code, 400, malformed.data)
+
+        history = self.client.get("/api/v1/automation/executions/", **self._headers(self.org_a))
+        self.assertEqual(history.data["count"], 0)
+
+
+class AutomationStepSecretMaskingTests(APITestCase):
+    def test_execution_step_never_returns_a_webhook_secret(self):
+        from automation.api.serializers import AutomationStepExecutionSerializer
+        from automation.models.step_execution import AutomationStepExecution
+
+        step = AutomationStepExecution(
+            order=1, action_id="call_webhook",
+            config_snapshot={"url": "https://hooks.example.com/x", "secret": "probe-secret-value"},
+        )
+        data = AutomationStepExecutionSerializer(step).data
+        self.assertEqual(data["config_snapshot"]["secret"], "********")
+        self.assertEqual(data["config_snapshot"]["url"], "https://hooks.example.com/x")
+        self.assertNotIn("probe-secret-value", str(data))
+
+    def test_other_actions_are_returned_unchanged(self):
+        from automation.api.serializers import AutomationStepExecutionSerializer
+        from automation.models.step_execution import AutomationStepExecution
+
+        step = AutomationStepExecution(order=1, action_id="send_notification", config_snapshot={"message": "hi"})
+        self.assertEqual(AutomationStepExecutionSerializer(step).data["config_snapshot"], {"message": "hi"})
