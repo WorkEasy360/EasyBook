@@ -3,7 +3,8 @@ import "server-only";
 import { redirect } from "next/navigation";
 import { callUpstream, decodeJson, throwIfError } from "./upstream";
 import { DEFAULT_TIMEOUT_MS, REPORT_TIMEOUT_MS } from "./config";
-import type { ApiError } from "./errors";
+import { errorCodeOf, toApiError, type ApiError } from "./errors";
+import { accessEndedPath } from "@/lib/auth/workeasy360-paths";
 import { readSession } from "@/lib/auth/session";
 import { maybeSession } from "@/lib/auth/context";
 import type { Paginated } from "./types";
@@ -73,6 +74,13 @@ async function request<T>(
   if (response.status === 401) {
     // Middleware already had its chance to refresh; the session is dead.
     redirect("/login?reason=expired");
+  }
+
+  if (response.status === 403) {
+    const refused = toApiError(response.status, decodeJson(response), response.requestId);
+    // Workeasy360 says the organization's access to EasyBook has ended.
+    if (refused.isAccessEnded) redirect(accessEndedPath(errorCodeOf(refused), refused.accessEndedReason));
+    throw refused;
   }
 
   throwIfError(response);

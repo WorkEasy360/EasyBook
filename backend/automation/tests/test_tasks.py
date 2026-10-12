@@ -119,6 +119,27 @@ class ScheduledTriggerTaskTests(AutomationTasksTestsBase, TransactionTestCase):
             self.assertEqual(AutomationNotification.objects.count(), 1)
 
 
+class ScheduleClockTests(AutomationTasksTestsBase, TransactionTestCase):
+    def test_a_new_schedule_starts_on_the_utc_date_the_due_task_compares_it_with(self):
+        """``date.today()`` is the machine's local date; on a non-UTC Windows machine it differs from the UTC
+        date ``run_due_schedules_task`` uses for hours each day, which made a rule activated then "not yet
+        due" - test_daily_schedule_fires_once_per_day failed in those hours."""
+        from unittest import mock
+
+        from automation.models.schedule import AutomationSchedule
+
+        late_utc = datetime.datetime(2030, 1, 1, 23, 30, tzinfo=datetime.timezone.utc)
+        with mock.patch("django.utils.timezone.now", return_value=late_utc), tenant_context(
+            organization_id=self.org.id
+        ):
+            rule = create_rule(
+                organization=self.org, name="Daily digest", trigger_type="schedule.daily", conditions=[],
+                actions=[{"action_id": "send_notification", "config": {"message": "daily"}}], actor=self.owner,
+            )
+            activate_rule(rule=rule, actor=self.owner)
+            self.assertEqual(AutomationSchedule.objects.get(rule=rule).next_run_at, datetime.date(2030, 1, 1))
+
+
 class ScanTriggerTaskTests(AutomationTasksTestsBase, TransactionTestCase):
     def test_overdue_scan_fires_and_respects_cooldown(self):
         with tenant_context(organization_id=self.org.id):

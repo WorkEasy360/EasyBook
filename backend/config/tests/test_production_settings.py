@@ -14,7 +14,7 @@ from pathlib import Path
 
 from django.test import SimpleTestCase
 
-from config.settings.preflight import validate_production_settings
+from config.settings.preflight import validate_production_settings, validate_workeasy360_settings
 
 BACKEND_DIR = Path(__file__).resolve().parent.parent.parent
 
@@ -34,6 +34,25 @@ VALID_KWARGS = {
 class ValidateProductionSettingsTests(SimpleTestCase):
     def test_fully_configured_values_pass(self):
         validate_production_settings(**VALID_KWARGS)  # must not raise
+
+    def test_a_document_link_lifetime_up_to_the_ceiling_passes(self):
+        validate_production_settings(**{**VALID_KWARGS, "document_signed_url_ttl_seconds": 900})  # must not raise
+        validate_production_settings(**{**VALID_KWARGS, "document_signed_url_ttl_seconds": 1})
+
+    def test_a_document_link_lifetime_above_the_ceiling_is_rejected(self):
+        kwargs = {**VALID_KWARGS, "document_signed_url_ttl_seconds": 901}
+        with self.assertRaisesMessage(RuntimeError, "DOCUMENT_SIGNED_URL_TTL_SECONDS"):
+            validate_production_settings(**kwargs)
+
+    def test_a_document_link_lifetime_of_a_week_is_rejected(self):
+        kwargs = {**VALID_KWARGS, "document_signed_url_ttl_seconds": 7 * 24 * 3600}
+        with self.assertRaisesMessage(RuntimeError, "DOCUMENT_SIGNED_URL_TTL_SECONDS"):
+            validate_production_settings(**kwargs)
+
+    def test_a_zero_or_negative_document_link_lifetime_is_rejected(self):
+        for value in (0, -5):
+            with self.assertRaisesMessage(RuntimeError, "DOCUMENT_SIGNED_URL_TTL_SECONDS"):
+                validate_production_settings(**{**VALID_KWARGS, "document_signed_url_ttl_seconds": value})
 
     def test_missing_secret_key_rejected(self):
         kwargs = {**VALID_KWARGS, "secret_key": None}
@@ -102,6 +121,12 @@ def _run_check(overrides=None):
         "DOCUMENT_STORAGE_BACKEND": "s3",
         "TRUSTED_PROXY_COUNT": "1",
         "BFF_PROXY_SECRET": "b" * 48,
+        "WORKEASY360_SSO_ONLY": "1",
+        "WORKEASY360_ISSUER": "https://auth.workeasy360.com",
+        "WORKEASY360_CLIENT_ID": "client-id",
+        "WORKEASY360_REDIRECT_URI": "https://book.workeasy360.com/api/auth/callback/workeasy360",
+        "WORKEASY360_KEY_ID": "credential-id",
+        "WORKEASY360_PRIVATE_KEY": "presence is all the boot check reads",
         **(overrides or {}),
     }
     return subprocess.run(
@@ -125,6 +150,53 @@ class ProductionSettingsWiringTests(SimpleTestCase):
         result = _run_check({"DJANGO_ALLOWED_HOSTS": "*"})
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("DJANGO_ALLOWED_HOSTS", result.stderr)
+
+    def test_workeasy360_only_without_sign_in_settings_crashes_the_process(self):
+        result = _run_check({"WORKEASY360_ISSUER": ""})
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("WORKEASY360_SSO_ONLY", result.stderr)
+
+
+VALID_WORKEASY360 = {
+    "sso_only": True,
+    "issuer": "https://auth.workeasy360.com",
+    "client_id": "client-id",
+    "redirect_uri": "https://book.workeasy360.com/api/auth/callback/workeasy360",
+    "key_id": "credential-id",
+    "has_private_key": True,
+}
+
+
+class Workeasy360SettingsTests(SimpleTestCase):
+    def _check(self, **overrides):
+        validate_workeasy360_settings(**{**VALID_WORKEASY360, **overrides})
+
+    def test_fully_configured_passes(self):
+        self._check()
+
+    def test_sso_only_needs_every_value(self):
+        for name in ("issuer", "client_id", "redirect_uri", "key_id"):
+            with self.subTest(name), self.assertRaisesMessage(RuntimeError, "WORKEASY360_SSO_ONLY"):
+                self._check(**{name: ""})
+        with self.assertRaisesMessage(RuntimeError, "WORKEASY360_SSO_ONLY"):
+            self._check(has_private_key=False)
+
+    def test_sign_in_may_be_absent_when_passwords_are_allowed(self):
+        self._check(sso_only=False, issuer="", client_id="", redirect_uri="", key_id="", has_private_key=False)
+
+    def test_partial_configuration_rejected(self):
+        with self.assertRaisesMessage(RuntimeError, "partly configured"):
+            self._check(sso_only=False, key_id="")
+
+    def test_issuer_and_redirect_must_be_https(self):
+        with self.assertRaisesMessage(RuntimeError, "WORKEASY360_ISSUER"):
+            self._check(issuer="http://auth.workeasy360.com")
+        with self.assertRaisesMessage(RuntimeError, "WORKEASY360_REDIRECT_URI"):
+            self._check(redirect_uri="http://book.workeasy360.com/api/auth/callback/workeasy360")
+
+    def test_issuer_with_trailing_slash_rejected(self):
+        with self.assertRaisesMessage(RuntimeError, "exact string"):
+            self._check(issuer="https://auth.workeasy360.com/")
 
 
 class HostnameTopologyTests(SimpleTestCase):

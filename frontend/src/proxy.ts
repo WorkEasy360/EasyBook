@@ -49,8 +49,22 @@ function isPublic(pathname: string): boolean {
   return PUBLIC_PATHS.some((path) => pathname === path || pathname.startsWith(`${path}/`));
 }
 
+/** The Workeasy360 launcher opens `/?organization=<uuid>` (src/lib/auth/workeasy360.ts). */
+const LAUNCH_ORGANIZATION = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 export async function proxy(request: NextRequest) {
   const { pathname, search } = request.nextUrl;
+
+  // Opened from the Workeasy360 app launcher: sign in through Workeasy360 for
+  // the organization the user picked there, even if a session already exists
+  // here - it may belong to another organization or another person.
+  const launchOrganization = request.nextUrl.searchParams.get("organization");
+  if (launchOrganization && LAUNCH_ORGANIZATION.test(launchOrganization)) {
+    const target = new URL("/api/auth/workeasy360/start", request.url);
+    target.searchParams.set("organization", launchOrganization);
+    if (pathname !== "/") target.searchParams.set("next", pathname);
+    return NextResponse.redirect(target);
+  }
 
   const access = request.cookies.get(ACCESS_COOKIE)?.value ?? null;
   const refresh = request.cookies.get(REFRESH_COOKIE)?.value ?? null;

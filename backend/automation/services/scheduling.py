@@ -25,6 +25,7 @@ import datetime
 
 from django.conf import settings
 from django.db import IntegrityError, transaction
+from django.utils import timezone
 
 from automation.models.schedule import AutomationScanOccurrence, AutomationSchedule, AutomationScheduleOccurrence
 from core.exceptions import ApplicationError
@@ -53,7 +54,11 @@ def ensure_schedule(*, rule, start_date=None) -> AutomationSchedule | None:
     if rule.trigger_type not in SCHEDULE_TRIGGER_TYPES:
         return None
     schedule, _created = AutomationSchedule.objects.get_or_create(
-        rule=rule, defaults={"organization": rule.organization, "next_run_at": start_date or datetime.date.today()}
+        rule=rule,
+        # The date the due-schedule task compares it with (``timezone.now().date()``, UTC). ``date.today()`` is
+        # the machine's local date, which differs from it for hours each day wherever the OS is not on UTC
+        # (a Windows developer machine; Django only pins TZ on Unix) and made a new daily schedule "not yet due".
+        defaults={"organization": rule.organization, "next_run_at": start_date or timezone.now().date()},
     )
     return schedule
 

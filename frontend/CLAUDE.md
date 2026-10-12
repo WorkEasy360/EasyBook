@@ -5,7 +5,7 @@ Production UI for EasyBook, consuming the `backend/` REST API under `/api/v1/`.
 Original design system — never a clone of Zoho Books/Xero/QuickBooks/Tally.
 
 STACK (verified against the registry, not assumed — see "VERSION TRAPS")
-Next.js 16.3.5 (App Router, Turbopack) · React 19.3.0 · TypeScript 5.9.3 ·
+Next.js 16.3.8 (App Router, Turbopack) · React 19.3.0 · TypeScript 5.9.3 ·
 Tailwind 4.3.3 · TanStack Query 5 · react-hook-form 7 + zod 4 · big.js 7 ·
 Vitest 4 · Playwright 1.63. Node 20.9+. All dependencies pinned exactly.
 

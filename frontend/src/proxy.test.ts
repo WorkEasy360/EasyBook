@@ -96,3 +96,30 @@ describe("proxy public pages", () => {
     expect(location.searchParams.get("next")).toBe("/sales/invoices?page=2");
   });
 });
+
+describe("proxy: opened from the Workeasy360 launcher", () => {
+  const organization = "7b0f4f7e-2a3c-4f4e-9a59-3f5c1b2d4e6a";
+
+  it("sends a signed-out visitor to Workeasy360 sign-in for that organization", async () => {
+    const response = await proxy(pageRequest(`/?organization=${organization}`));
+    const location = new URL(response.headers.get("location") ?? "");
+    expect(response.status).toBe(307);
+    expect(location.pathname).toBe("/api/auth/workeasy360/start");
+    expect(location.searchParams.get("organization")).toBe(organization);
+    expect(location.searchParams.has("next")).toBe(false);
+  });
+
+  it("re-runs sign-in even with a session, keeping a deep link's path", async () => {
+    const response = await proxy(
+      pageRequest(`/sales/invoices?organization=${organization}`, { ...expiringSession, eb_at: tokenExpiringIn(3600) }),
+    );
+    const location = new URL(response.headers.get("location") ?? "");
+    expect(location.pathname).toBe("/api/auth/workeasy360/start");
+    expect(location.searchParams.get("next")).toBe("/sales/invoices");
+  });
+
+  it("ignores an organization value that is not a UUID", async () => {
+    const response = await proxy(pageRequest("/login?organization=..%2F..%2Fevil"));
+    expect(response.headers.get("location")).toBeNull();
+  });
+});

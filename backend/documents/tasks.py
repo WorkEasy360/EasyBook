@@ -8,8 +8,9 @@ from celery import shared_task
 from celery.utils.log import get_task_logger
 from django.utils import timezone
 
+from core import access
 from core.tenancy import tenant_context
-from documents.services.ocr import process_ocr, recover_stalled_ocr
+from documents.services.ocr import has_stalled_ocr, process_ocr, recover_stalled_ocr
 
 logger = get_task_logger("documents.tasks")
 
@@ -26,6 +27,11 @@ OCR_RECOVERY_MAX_ATTEMPTS = 5
 
 @shared_task
 def run_ocr_task(document_id: str, organization_id: str):
+    # Extraction sends the document to the OCR provider and writes the result. An organization whose
+    # Workeasy360 access ended is skipped: the document stays QUEUED, and the recovery sweeper re-enqueues
+    # it after a renewal (docs/workeasy360-sso.md).
+    if not access.background_allowed_for_id(organization_id, task="documents.run_ocr"):
+        return
     with tenant_context(organization_id=organization_id):
         process_ocr(document_id=document_id)
 
@@ -39,11 +45,19 @@ def recover_stalled_ocr_task():
 
     now = timezone.now()
     totals = {"requeued": 0, "failed": 0}
+    queued_before = now - OCR_RECOVERY_QUEUED_AFTER
+    processing_before = now - OCR_RECOVERY_PROCESSING_AFTER
     for organization in Organization.objects.filter(is_active=True):
+        # Asked only when something is stalled. Denied: re-enqueuing would be skipped again and would spend
+        # the document's recovery budget.
+        with tenant_context(organization_id=organization.id):
+            stalled = has_stalled_ocr(queued_before=queued_before, processing_before=processing_before)
+        if not stalled or not access.background_allowed(organization, task="documents.recover_stalled_ocr"):
+            continue
         with tenant_context(organization_id=organization.id):
             result = recover_stalled_ocr(
-                queued_before=now - OCR_RECOVERY_QUEUED_AFTER,
-                processing_before=now - OCR_RECOVERY_PROCESSING_AFTER,
+                queued_before=queued_before,
+                processing_before=processing_before,
                 max_attempts=OCR_RECOVERY_MAX_ATTEMPTS,
             )
         totals["requeued"] += result["requeued"]

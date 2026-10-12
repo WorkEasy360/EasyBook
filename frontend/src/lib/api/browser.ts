@@ -1,8 +1,9 @@
 "use client";
 
-import { ApiError, NetworkError, TimeoutError, toApiError } from "./errors";
+import { ApiError, NetworkError, TimeoutError, errorCodeOf, toApiError } from "./errors";
 import type { Paginated } from "./types";
 import { buildSearch, type QueryParams } from "./query";
+import { accessEndedPath } from "@/lib/auth/workeasy360-paths";
 
 /**
  * Browser-side API client. Talks to the same-origin BFF (src/app/api/bff),
@@ -101,6 +102,11 @@ async function request<T>(
       // cache and every Server Component payload rendered for the dead session.
       // eslint-disable-next-line @next/next/no-location-assign-relative-destination
       window.location.assign("/login?reason=expired");
+    }
+    if (error.isAccessEnded && typeof window !== "undefined") {
+      // Workeasy360 says the organization's access to EasyBook has ended:
+      // one page explains it. A hard navigation for the same reason as above.
+      window.location.assign(accessEndedPath(errorCodeOf(error), error.accessEndedReason));
     }
     throw error;
   }

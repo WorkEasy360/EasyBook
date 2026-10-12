@@ -59,6 +59,32 @@ export class ApiError extends Error {
    * distinguishing from a plain 403 because the fix is "switch organization",
    * not "ask for permission".
    */
+  /**
+   * True when Workeasy360 says the organization's access to EasyBook has
+   * ended, or EasyBook cannot confirm it (backend/sso/entitlement.py): the
+   * fix is in Workeasy360, not asking anyone for a permission.
+   */
+  get isAccessEnded(): boolean {
+    const code = errorCodeOf(this);
+    return (
+      this.status === 403 &&
+      (code === "workeasy360_access_ended" ||
+        code === "workeasy360_access_unverified" ||
+        code === "workeasy360_sign_in_required")
+    );
+  }
+
+  /**
+   * Why a *person's* access ended (`membership_inactive`, `no_seat`), or null for the organization's own
+   * ended access (backend/sso/entitlement.py puts it in `details`).
+   */
+  get accessEndedReason(): string | null {
+    const details = this.details;
+    if (typeof details !== "object" || details === null || !("reason" in details)) return null;
+    const reason = (details as { reason: unknown }).reason;
+    return typeof reason === "string" ? reason : null;
+  }
+
   get isOrganizationError(): boolean {
     return (
       errorCodeOf(this) === "organization_required" ||

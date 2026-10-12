@@ -37,6 +37,9 @@ INSTALLED_APPS = [
     "corsheaders",
     "core",
     "accounts",
+    # Workeasy360 sign-in (OpenID Connect). Same layer as accounts: depends on
+    # core/accounts/authz/audit only. See sso/CLAUDE.md.
+    "sso",
     "authz",
     "audit",
     "documents",
@@ -218,6 +221,7 @@ CELERY_TASK_ROUTES = {
     "automation.tasks.run_due_scans_task": {"queue": "celery"},
     "automation.tasks.recover_stalled_executions_task": {"queue": "celery"},
     "documents.tasks.recover_stalled_ocr_task": {"queue": "celery"},
+    "ai.rag.tasks.resume_skipped_indexing_task": {"queue": "celery"},
     # Extraction and bulk retention deletes.
     "documents.tasks.run_ocr_task": {"queue": "heavy"},
     "ai.rag.tasks.purge_expired_ai_data": {"queue": "heavy"},
@@ -253,6 +257,7 @@ CELERY_TASK_ANNOTATIONS = {
     "automation.tasks.run_due_scans_task": _TASK_LIMITS_SHORT,
     "automation.tasks.recover_stalled_executions_task": _TASK_LIMITS_SHORT,
     "documents.tasks.recover_stalled_ocr_task": _TASK_LIMITS_SHORT,
+    "ai.rag.tasks.resume_skipped_indexing_task": _TASK_LIMITS_SHORT,
     "sales.tasks.generate_recurring_invoices_task": _TASK_LIMITS_LONG,
     "purchases.tasks.generate_recurring_bills_task": _TASK_LIMITS_LONG,
     "purchases.tasks.generate_recurring_expenses_task": _TASK_LIMITS_LONG,
@@ -304,6 +309,11 @@ CELERY_BEAT_SCHEDULE = {
     "ai-purge-expired-data": {
         "task": "ai.rag.tasks.purge_expired_ai_data",
         "schedule": timedelta(seconds=env.int("BEAT_AI_PURGE_SECONDS", default=86400)),
+    },
+    # Indexing skipped while an organization's Workeasy360 access had ended (sso/entitlement.py).
+    "ai-resume-skipped-indexing": {
+        "task": "ai.rag.tasks.resume_skipped_indexing_task",
+        "schedule": timedelta(seconds=env.int("BEAT_AI_RESUME_INDEXING_SECONDS", default=900)),
     },
     # Recovery sweepers: work whose task message was lost (failed enqueue,
     # worker killed mid-run) is otherwise stuck PENDING/QUEUED/RUNNING forever.
@@ -392,6 +402,41 @@ SIMPLE_JWT = {
     "USER_ID_CLAIM": "user_id",
 }
 
+# --- Workeasy360 sign-in (sso/) -------------------------------------------
+# EasyBook is a Workeasy360 product: people sign in with their Workeasy360
+# account (OpenID Connect, authorization code + PKCE, private_key_jwt). Only
+# the issuer is configured; every endpoint comes from its discovery document.
+# docs/workeasy360-sso.md has the registration steps.
+WORKEASY360_ISSUER = env("WORKEASY360_ISSUER", default="")
+WORKEASY360_CLIENT_ID = env("WORKEASY360_CLIENT_ID", default="")
+# Exactly as registered with Workeasy360: redirect URIs match by string
+# equality. The BFF route src/app/api/auth/callback/workeasy360/route.ts.
+WORKEASY360_REDIRECT_URI = env("WORKEASY360_REDIRECT_URI", default="")
+# The credential id Workeasy360 returned for our public key (the JWT `kid`).
+WORKEASY360_KEY_ID = env("WORKEASY360_KEY_ID", default="")
+# Our private key (RSA or EC P-256, PEM). Either inline or a file path; never
+# committed. Workeasy360 holds only the public half.
+WORKEASY360_PRIVATE_KEY = env("WORKEASY360_PRIVATE_KEY", default="")
+WORKEASY360_PRIVATE_KEY_FILE = env("WORKEASY360_PRIVATE_KEY_FILE", default="")
+# Must equal the token's product_code (the Workeasy360 catalog code).
+WORKEASY360_PRODUCT_CODE = env("WORKEASY360_PRODUCT_CODE", default="easybook")
+WORKEASY360_SCOPES = env.list("WORKEASY360_SCOPES", default=["openid", "email", "profile", "organization"])
+# Role given to someone joining an organization that already exists here. The
+# person whose sign-in creates the organization becomes its owner.
+WORKEASY360_DEFAULT_ROLE = env("WORKEASY360_DEFAULT_ROLE", default="staff")
+# Currency for an organization provisioned by a first sign-in (the owner can
+# change it before posting anything).
+WORKEASY360_DEFAULT_CURRENCY = env("WORKEASY360_DEFAULT_CURRENCY", default="INR")
+# Workeasy360 is the only way in: password sign-in, self-registration and
+# creating an organization here (organizations come from Workeasy360) are all
+# refused. On by default; dev.py and test.py turn it off.
+WORKEASY360_SSO_ONLY = env.bool("WORKEASY360_SSO_ONLY", default=True)
+# Where Workeasy360 returns the browser after "sign out of EasyBook and
+# Workeasy360" (RP-initiated logout). Registered for this client in
+# Workeasy360 exactly (its post-logout URIs), e.g.
+# https://book.workeasy360.com/login. Empty: only EasyBook's own sign-out.
+WORKEASY360_POST_LOGOUT_REDIRECT_URI = env("WORKEASY360_POST_LOGOUT_REDIRECT_URI", default="")
+
 # --- CORS ---------------------------------------------------------------
 
 CORS_ALLOWED_ORIGINS = env.list("CORS_ALLOWED_ORIGINS", default=["http://localhost:3000"])
@@ -438,6 +483,10 @@ DOCUMENT_STORAGE_S3_REGION = env("DOCUMENT_STORAGE_S3_REGION", default="")
 # Short-lived by design (phase section 3/21) — never a long-lived or
 # permanent link, regardless of backend.
 DOCUMENT_SIGNED_URL_TTL_SECONDS = env.int("DOCUMENT_SIGNED_URL_TTL_SECONDS", default=300)
+# ... and bounded: a longer value is refused at production start (preflight.py) and clamped to this
+# wherever the lifetime is used (documents/services/downloads.py::signed_url_ttl_seconds). Not an
+# environment variable on purpose - raising the ceiling is a code review, not a deploy setting.
+DOCUMENT_SIGNED_URL_MAX_TTL_SECONDS = 900
 
 # Per-category ceilings (phase section 5) — deliberately not one blanket
 # limit: an image or PDF legitimately needs more room than a CSV/receipt scan.

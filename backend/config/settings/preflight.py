@@ -45,6 +45,8 @@ def validate_production_settings(
     document_storage_backend,
     trusted_proxy_count,
     bff_proxy_secret,
+    document_signed_url_ttl_seconds=300,
+    document_signed_url_max_ttl_seconds=900,
 ):
     """Raise RuntimeError on the first insecure/missing value found.
 
@@ -105,3 +107,43 @@ def validate_production_settings(
             "DOCUMENT_STORAGE_BACKEND must be 's3' in production — local filesystem "
             "storage is a dev/test-only default (see documents/CLAUDE.md)."
         )
+
+    if not 1 <= document_signed_url_ttl_seconds <= document_signed_url_max_ttl_seconds:
+        raise RuntimeError(
+            f"DOCUMENT_SIGNED_URL_TTL_SECONDS must be between 1 and {document_signed_url_max_ttl_seconds} "
+            f"seconds in production (it is {document_signed_url_ttl_seconds}) — a download link is "
+            "a bearer credential for a private document and must stay short-lived."
+        )
+
+
+def validate_workeasy360_settings(
+    *, sso_only, issuer, client_id, redirect_uri, key_id, has_private_key, post_logout_redirect_uri=""
+):
+    """Workeasy360 sign-in in production (sso/).
+
+    With WORKEASY360_SSO_ONLY on, Workeasy360 is the only way in, so a
+    missing setting would lock every user out rather than degrade quietly -
+    it must stop the process instead. Whenever sign-in is configured at all,
+    the issuer and redirect URI must be https (the provider itself refuses a
+    non-loopback http redirect URI in production).
+    """
+    configured = [bool(issuer), bool(client_id), bool(redirect_uri), bool(key_id), bool(has_private_key)]
+    if sso_only and not all(configured):
+        raise RuntimeError(
+            "WORKEASY360_SSO_ONLY is on, so WORKEASY360_ISSUER, WORKEASY360_CLIENT_ID, WORKEASY360_REDIRECT_URI, "
+            "WORKEASY360_KEY_ID and WORKEASY360_PRIVATE_KEY (or _FILE) must all be set - otherwise nobody can sign in."
+        )
+    if not any(configured):
+        return
+    if not all(configured):
+        raise RuntimeError("Workeasy360 sign-in is partly configured; set every WORKEASY360_* sign-in value or none.")
+    for name, value in (("WORKEASY360_ISSUER", issuer), ("WORKEASY360_REDIRECT_URI", redirect_uri)):
+        parts = urlsplit(value)
+        if parts.scheme != "https" or not parts.hostname:
+            raise RuntimeError(f"{name} must be an https:// URL in production.")
+    if issuer.endswith("/"):
+        raise RuntimeError("WORKEASY360_ISSUER must not end with '/': issuers are compared by exact string.")
+    if post_logout_redirect_uri:
+        parts = urlsplit(post_logout_redirect_uri)
+        if parts.scheme != "https" or not parts.hostname:
+            raise RuntimeError("WORKEASY360_POST_LOGOUT_REDIRECT_URI must be an https:// URL in production.")

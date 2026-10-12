@@ -1,4 +1,5 @@
 import { requireSession } from "@/lib/auth/context";
+import { readSignInMethods } from "@/lib/auth/workeasy360";
 import { navigationForRole } from "@/lib/navigation";
 import { AppShell } from "@/components/shell/app-shell";
 import { QueryProvider } from "@/components/providers/query-provider";
@@ -16,6 +17,8 @@ import { ToastProvider } from "@/components/ui/toast";
 export default async function AppLayout({ children }: { children: React.ReactNode }) {
   const session = await requireSession();
   const sections = navigationForRole(session.role);
+  // A deployment setting, so a short cache keeps it off every page's path.
+  const { workeasy360SignOut } = await readSignInMethods({ revalidateSeconds: 300 });
 
   return (
     // key: remounting on organization change throws away the previous
@@ -38,6 +41,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
             user={session.user}
             organizations={session.organizations}
             organization={session.organization}
+            signOutOfWorkeasy360={workeasy360SignOut}
           >
             {children}
           </AppShell>

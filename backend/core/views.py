@@ -5,6 +5,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from accounts.models import Membership
+from core import access
 from core.exceptions import ApplicationError
 from core.tenancy import set_current_organization_id, set_current_user_id
 
@@ -62,13 +63,23 @@ class OrganizationScopedMixin:
         request.organization = membership.organization
         set_current_organization_id(membership.organization_id)
 
+    def _check_access(self, request) -> None:
+        # Gates other apps register (core.access) - the Workeasy360 entitlement re-check among them. Once
+        # per request, and only once the tenant is known.
+        if getattr(request, "organization", None) is None or getattr(request, "_access_checked", False):
+            return
+        request._access_checked = True
+        access.check(request, self)
+
     def check_permissions(self, request):
         self._resolve_tenant(request)
+        self._check_access(request)
         super().check_permissions(request)
 
     def initial(self, request, *args, **kwargs):
         super().initial(request, *args, **kwargs)
         self._resolve_tenant(request)
+        self._check_access(request)
 
 
 class AuthenticatedAPIView(APIView):
