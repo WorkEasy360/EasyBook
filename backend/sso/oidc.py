@@ -310,6 +310,15 @@ class Workeasy360Client:
             )
         except jwt.PyJWTError as exc:
             raise SSOError("invalid_token", str(exc)) from None
+        # OIDC Core 3.1.3.7 (items 3 and 4): a token for several audiences is ours only if it names us as
+        # the party it was issued to, and an ``azp`` that names anybody else was issued to somebody else.
+        authorized_party = claims.get("azp")
+        if authorized_party is not None and authorized_party != self.client_id:
+            raise SSOError("invalid_token", "azp is not this client")
+        audience = claims["aud"]
+        audiences = audience if isinstance(audience, list) else [audience]
+        if any(entry != self.client_id for entry in audiences) and authorized_party != self.client_id:
+            raise SSOError("invalid_token", "token has other audiences and no azp naming this client")
         if claims.get("typ") != "id_token":  # 6. not an access token
             raise SSOError("invalid_token", "typ is not id_token")
         returned_nonce = str(claims.get("nonce") or "")

@@ -64,5 +64,6 @@ validate_workeasy360_settings(
     redirect_uri=WORKEASY360_REDIRECT_URI,
     key_id=WORKEASY360_KEY_ID,
     has_private_key=bool(WORKEASY360_PRIVATE_KEY or WORKEASY360_PRIVATE_KEY_FILE),
+    product_code=WORKEASY360_PRODUCT_CODE,
     post_logout_redirect_uri=WORKEASY360_POST_LOGOUT_REDIRECT_URI,
 )

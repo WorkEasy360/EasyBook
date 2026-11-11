@@ -1,14 +1,9 @@
 import { NextResponse } from "next/server";
 import { cookies } from "next/headers";
 import { callUpstream, decodeJson } from "@/lib/api/upstream";
+import { cookieName } from "@/lib/auth/cookie-names";
 import { cookieSecurity } from "@/lib/auth/session";
-import {
-  SSO_FLOW_COOKIE,
-  SSO_FLOW_MAX_AGE_SECONDS,
-  SSO_FLOW_PATH,
-  organizationParam,
-  safePath,
-} from "@/lib/auth/workeasy360";
+import { SSO_FLOW_MAX_AGE_SECONDS, organizationParam, safePath } from "@/lib/auth/workeasy360";
 import { redirectToPath } from "@/lib/redirect";
 import { clientIpFromHeaders } from "@/lib/security/client-ip";
 
@@ -53,9 +48,9 @@ export async function GET(request: Request): Promise<NextResponse> {
   }
 
   const store = await cookies();
-  store.set(SSO_FLOW_COOKIE, JSON.stringify({ flow, next }), {
+  // Path=/ and no Domain (cookieSecurity), as a `__Host-` cookie requires.
+  store.set(cookieName("ssoFlow"), JSON.stringify({ flow, next }), {
     ...cookieSecurity(),
-    path: SSO_FLOW_PATH,
     maxAge: SSO_FLOW_MAX_AGE_SECONDS,
   });
   return NextResponse.redirect(authorizationUrl);

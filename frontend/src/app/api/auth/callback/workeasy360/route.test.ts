@@ -1,10 +1,11 @@
 // @vitest-environment node
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const callUpstream = vi.fn();
 const writeSession = vi.fn();
 const readSession = vi.fn();
 const writeOrganizationId = vi.fn();
+const clearSignedOutMarker = vi.fn();
 const cookieJar = new Map<string, string>();
 const cookieSets: Array<{ name: string; value: string; options: Record<string, unknown> }> = [];
 
@@ -23,7 +24,13 @@ vi.mock("@/lib/auth/session", () => ({
   writeSession,
   readSession,
   writeOrganizationId,
-  cookieSecurity: () => ({ httpOnly: true, sameSite: "lax", secure: false, path: "/" }),
+  clearSignedOutMarker,
+  cookieSecurity: () => ({
+    httpOnly: true,
+    sameSite: "lax",
+    secure: process.env.SESSION_COOKIE_SECURE === "1",
+    path: "/",
+  }),
 }));
 
 const { GET } = await import("./route");
@@ -38,9 +45,13 @@ describe("GET /api/auth/callback/workeasy360", () => {
     writeSession.mockReset();
     readSession.mockReset().mockResolvedValue(null);
     writeOrganizationId.mockReset();
+    clearSignedOutMarker.mockReset();
     cookieJar.clear();
     cookieSets.length = 0;
     cookieJar.set("eb_sso", JSON.stringify({ flow: "signed-flow", next: "/invoices" }));
+  });
+  afterEach(() => {
+    vi.unstubAllEnvs();
   });
 
   it("relays code, state and the kept flow, then sets the session and lands on next", async () => {
@@ -54,6 +65,22 @@ describe("GET /api/auth/callback/workeasy360", () => {
     expect(writeSession).toHaveBeenCalledWith({ access: "a", refresh: "r" });
     expect(writeOrganizationId).toHaveBeenCalledWith("org-1");
     expect(response.headers.get("location")).toBe("/invoices");
+  });
+
+  it("clears the sign-out marker only when the sign-in succeeds", async () => {
+    // A later visit may start a sign-in by itself again - but a refused or
+    // failed sign-in must not re-arm that (src/lib/auth/direct-visit.ts). The loop guard is not
+    // touched here at all: it expires by itself.
+    callUpstream.mockResolvedValue({ status: 200, json: { access: "a", refresh: "r", organization_id: "org-1" } });
+    await GET(callback("code=c&state=s"));
+    expect(clearSignedOutMarker).toHaveBeenCalledTimes(1);
+
+    clearSignedOutMarker.mockClear();
+    cookieJar.set("eb_sso", JSON.stringify({ flow: "signed-flow", next: null }));
+    callUpstream.mockResolvedValue({ status: 403, json: { error: { code: "state_mismatch" } } });
+    await GET(callback("code=c&state=forged"));
+    await GET(callback("error=access_denied"));
+    expect(clearSignedOutMarker).not.toHaveBeenCalled();
   });
 
   it("signs the previous person out properly when someone else signs in", async () => {
@@ -133,5 +160,46 @@ describe("GET /api/auth/callback/workeasy360", () => {
     callUpstream.mockRejectedValue(new Error("ECONNREFUSED"));
     const response = await GET(callback("code=c&state=s"));
     expect(response.headers.get("location")).toBe("/login?sso_error=unavailable");
+  });
+
+  describe("with Secure cookies", () => {
+    beforeEach(() => {
+      vi.stubEnv("SESSION_COOKIE_SECURE", "1");
+      cookieJar.clear();
+    });
+
+    it("reads the flow from the __Host- cookie and spends it with Path=/ and no Domain", async () => {
+      cookieJar.set("__Host-eb_sso", JSON.stringify({ flow: "signed-flow", next: "/invoices" }));
+      callUpstream.mockResolvedValue({ status: 200, json: { access: "a", refresh: "r", organization_id: "o" } });
+
+      const response = await GET(callback("code=c&state=s"));
+
+      expect(response.headers.get("location")).toBe("/invoices");
+      const spent = cookieSets.find((set) => set.name === "__Host-eb_sso");
+      expect(spent).toMatchObject({ value: "", options: { maxAge: 0, secure: true, path: "/" } });
+      expect(spent?.options).not.toHaveProperty("domain");
+    });
+
+    it("ignores a flow planted under the plain name (login CSRF from a sibling subdomain)", async () => {
+      // The attacker's own flow, code and state: without the prefix this would sign the victim in to the
+      // attacker's books.
+      cookieJar.set("eb_sso", JSON.stringify({ flow: "attackers-flow", next: "/invoices" }));
+
+      const response = await GET(callback("code=attackers-code&state=attackers-state"));
+
+      expect(response.headers.get("location")).toBe("/login?sso_error=expired");
+      expect(callUpstream).not.toHaveBeenCalled();
+      expect(writeSession).not.toHaveBeenCalled();
+    });
+
+    it("uses the genuine flow even when a plain-named duplicate sits beside it", async () => {
+      cookieJar.set("eb_sso", JSON.stringify({ flow: "attackers-flow", next: "/evil" }));
+      cookieJar.set("__Host-eb_sso", JSON.stringify({ flow: "signed-flow", next: "/invoices" }));
+      callUpstream.mockResolvedValue({ status: 200, json: { access: "a", refresh: "r", organization_id: "o" } });
+
+      await GET(callback("code=c&state=s"));
+
+      expect(JSON.parse((callUpstream.mock.calls[0]?.[0] as { body: string }).body).flow).toBe("signed-flow");
+    });
   });
 });

@@ -156,6 +156,12 @@ class ProductionSettingsWiringTests(SimpleTestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("WORKEASY360_SSO_ONLY", result.stderr)
 
+    def test_an_empty_product_code_crashes_the_process(self):
+        # Otherwise the token's product_code would be held against nothing (sso/flow.py).
+        result = _run_check({"WORKEASY360_PRODUCT_CODE": ""})
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("WORKEASY360_PRODUCT_CODE", result.stderr)
+
 
 VALID_WORKEASY360 = {
     "sso_only": True,
@@ -164,6 +170,7 @@ VALID_WORKEASY360 = {
     "redirect_uri": "https://book.workeasy360.com/api/auth/callback/workeasy360",
     "key_id": "credential-id",
     "has_private_key": True,
+    "product_code": "easybook",
 }
 
 
@@ -193,6 +200,14 @@ class Workeasy360SettingsTests(SimpleTestCase):
             self._check(issuer="http://auth.workeasy360.com")
         with self.assertRaisesMessage(RuntimeError, "WORKEASY360_REDIRECT_URI"):
             self._check(redirect_uri="http://book.workeasy360.com/api/auth/callback/workeasy360")
+
+    def test_an_empty_product_code_is_refused_whatever_else_is_configured(self):
+        for blank in ("", "   ", None):
+            with self.subTest(repr(blank)), self.assertRaisesMessage(RuntimeError, "WORKEASY360_PRODUCT_CODE"):
+                self._check(product_code=blank)
+        with self.assertRaisesMessage(RuntimeError, "WORKEASY360_PRODUCT_CODE"):
+            self._check(sso_only=False, issuer="", client_id="", redirect_uri="", key_id="", has_private_key=False,
+                        product_code="")
 
     def test_issuer_with_trailing_slash_rejected(self):
         with self.assertRaisesMessage(RuntimeError, "exact string"):

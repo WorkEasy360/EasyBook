@@ -1,11 +1,16 @@
 """End to end through the API the BFF calls: start, then callback, against a
 fake Workeasy360 that signs real tokens."""
 
+import io
 from unittest import mock
 
+from django.conf import settings
 from django.core.cache import cache
-from django.test import override_settings
+from django.core.management import call_command
+from django.core.management.base import SystemCheckError
+from django.test import SimpleTestCase, override_settings
 from rest_framework.test import APITestCase
+from rest_framework.throttling import SimpleRateThrottle
 from rest_framework_simplejwt.tokens import AccessToken, RefreshToken
 
 from accounts.models import Membership, Organization, User
@@ -13,7 +18,7 @@ from audit.models import AuditLog
 from authz.roles import Role
 from core.tenancy import tenant_context
 from core.tests.factories import make_org_with_owner, make_user
-from sso import config, entitlement
+from sso import checks, config, entitlement
 from sso.models import ExternalIdentity
 from sso.oidc import Workeasy360Client
 from sso.tests.fakes import (
@@ -25,6 +30,7 @@ from sso.tests.fakes import (
     FakeWorkeasy360,
     authorize_params,
 )
+from sso.views import Workeasy360CallbackView, Workeasy360StartView
 
 W360_ORG = "7b0f4f7e-2a3c-4f4e-9a59-3f5c1b2d4e6a"
 
@@ -70,7 +76,8 @@ class SignInTestCase(APITestCase):
         started = self.start(organization)
         params = authorize_params(started["authorization_url"])
         code = self.provider.issue_code(
-            nonce=params["nonce"], claims=self.provider.claims(organization_id=organization, **claims)
+            nonce=params["nonce"], code_challenge=params["code_challenge"],
+            claims=self.provider.claims(organization_id=organization, **claims),
         )
         return self.client.post(
             "/api/v1/auth/workeasy360/callback/",
@@ -238,7 +245,7 @@ class CallbackHardeningTests(SignInTestCase):
     def test_state_mismatch_is_refused(self):
         started = self.start(W360_ORG)
         params = authorize_params(started["authorization_url"])
-        code = self.provider.issue_code(nonce=params["nonce"])
+        code = self.provider.issue_code(nonce=params["nonce"], code_challenge=params["code_challenge"])
         response = self.client.post(
             "/api/v1/auth/workeasy360/callback/", {"code": code, "state": "forged", "flow": started["flow"]}
         )
@@ -274,7 +281,7 @@ class CallbackHardeningTests(SignInTestCase):
         started = self.start(W360_ORG)
         params = authorize_params(started["authorization_url"])
         code = self.provider.issue_code(
-            nonce=params["nonce"],
+            nonce=params["nonce"], code_challenge=params["code_challenge"],
             claims=self.provider.claims(organization_id="0d6c0a3e-8e52-4a63-8b0e-5a1d2c3b4f50"),
         )
         response = self.client.post(
@@ -353,3 +360,88 @@ class SignOutOfWorkeasy360Tests(SignInTestCase):
     def test_is_empty_when_the_provider_offers_no_end_session(self):
         self.provider.advertise_end_session = False
         self.assertEqual(self.end_session().data, {"url": ""})
+
+
+class ProductBindingTests(SignInTestCase):
+    def test_a_token_naming_the_configured_product_signs_in(self):
+        self.assertEqual(self.sign_in(product_code="easybook").status_code, 200)
+
+    def test_no_configured_product_code_fails_closed_instead_of_skipping_the_check(self):
+        with override_settings(WORKEASY360_PRODUCT_CODE=""):
+            for claimed in ("easybook", "easy_crm", None):
+                with self.subTest(claimed=claimed):
+                    response = self.sign_in(product_code=claimed)
+                    self.assertEqual(response.status_code, 403)
+                    self.assertEqual(response.data["error"]["code"], "wrong_product")
+        self.assertFalse(User.objects.filter(email="asha@example.com").exists())
+        self.assertFalse(Organization.objects.exists())
+
+
+class ProductCodeCheckTests(SimpleTestCase):
+    """The process refuses to start with no product code, in every environment (production also
+    refuses at import: config/tests/test_production_settings.py)."""
+
+    def test_the_default_configuration_passes(self):
+        self.assertEqual(checks.product_code_is_set(None), [])
+
+    def test_an_empty_or_blank_product_code_is_a_system_check_error(self):
+        for blank in ("", "  "):
+            with self.subTest(repr(blank)), override_settings(WORKEASY360_PRODUCT_CODE=blank):
+                errors = checks.product_code_is_set(None)
+                self.assertEqual([error.id for error in errors], ["sso.E001"])
+                self.assertIn("WORKEASY360_PRODUCT_CODE", errors[0].msg)
+
+    def test_manage_py_check_stops_on_it(self):
+        with override_settings(WORKEASY360_PRODUCT_CODE=""), self.assertRaises(SystemCheckError):
+            call_command("check", stdout=io.StringIO(), stderr=io.StringIO())
+
+
+class ThrottleScopeTests(SignInTestCase):
+    """The start endpoint has its own bucket: auto-start makes starts routine, and they must not use up the
+    callback's 20 a minute (an office behind one address, an uptime check)."""
+
+    RATES = {"auth": "20/min", "sso_start": "60/min"}
+
+    def setUp(self):
+        super().setUp()
+        patcher = mock.patch.dict(SimpleRateThrottle.THROTTLE_RATES, self.RATES)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def post_start(self):
+        return self.client.post("/api/v1/auth/workeasy360/start/", {})
+
+    def post_callback(self):
+        # A flow nobody signed: refused (403 flow_expired) after the throttle has counted it.
+        return self.client.post(
+            "/api/v1/auth/workeasy360/callback/", {"code": "x", "state": "s", "flow": "not-a-signed-flow"}
+        )
+
+    def test_scopes_and_default_rates(self):
+        self.assertEqual(Workeasy360StartView.throttle_scope, "sso_start")
+        self.assertEqual(Workeasy360CallbackView.throttle_scope, "auth")
+        rates = settings.REST_FRAMEWORK["DEFAULT_THROTTLE_RATES"]
+        self.assertIn("sso_start", rates)
+        self.assertIn("auth", rates)
+
+    def test_starts_beyond_the_auth_limit_still_work_and_leave_the_callbacks_budget_alone(self):
+        for number in range(25):  # more than the 20 an "auth" bucket allows
+            self.assertEqual(self.post_start().status_code, 200, f"start {number + 1}")
+        self.assertEqual(self.post_callback().status_code, 403)  # refused as a flow, not throttled
+
+    def test_the_callback_keeps_its_auth_limit_and_starts_do_not_notice(self):
+        for number in range(20):
+            self.assertEqual(self.post_callback().status_code, 403, f"callback {number + 1}")
+        self.assertEqual(self.post_callback().status_code, 429)
+        self.assertEqual(self.post_start().status_code, 200)
+
+    def test_password_sign_in_still_shares_the_auth_bucket_with_the_callback(self):
+        for _ in range(20):
+            self.post_callback()
+        response = self.client.post("/api/v1/auth/login/", {"email": "x@example.com", "password": "nope-nope-nope"})
+        self.assertEqual(response.status_code, 429)
+
+    def test_start_is_limited_at_its_own_rate(self):
+        for number in range(60):
+            self.assertEqual(self.post_start().status_code, 200, f"start {number + 1}")
+        self.assertEqual(self.post_start().status_code, 429)

@@ -13,9 +13,6 @@ vi.mock("@/lib/api/upstream", () => ({
   decodeJson: () => null,
 }));
 vi.mock("@/lib/auth/session", async () => ({
-  ACCESS_COOKIE: "eb_at",
-  REFRESH_COOKIE: "eb_rt",
-  ORG_COOKIE: "eb_org",
   ORG_MAX_AGE_SECONDS: 60,
   cookieSecurity: () => ({ httpOnly: true, sameSite: "lax", secure: false, path: "/" }),
   writeSession: vi.fn(),

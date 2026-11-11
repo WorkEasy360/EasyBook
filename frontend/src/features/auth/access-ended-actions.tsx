@@ -2,6 +2,7 @@
 
 import * as React from "react";
 import { Button } from "@/components/ui/button";
+import { SIGN_OUT_FAILED_MESSAGE, endEasyBookSession } from "@/lib/auth/sign-out";
 
 /** An organization the person can switch to from the access-ended page. */
 export interface OtherOrganization {
@@ -25,6 +26,7 @@ export function AccessEndedActions({
   signInRequired?: boolean;
 }) {
   const [signingOut, setSigningOut] = React.useState(false);
+  const [signOutFailed, setSignOutFailed] = React.useState(false);
   const [switching, setSwitching] = React.useState<string | null>(null);
   const [switchError, setSwitchError] = React.useState(false);
 
@@ -48,13 +50,17 @@ export function AccessEndedActions({
 
   async function signOut() {
     setSigningOut(true);
-    try {
-      await fetch("/api/auth/logout", { method: "POST" });
-    } finally {
-      // A HARD navigation is the point (see the component comment).
-      // eslint-disable-next-line @next/next/no-location-assign-relative-destination
-      window.location.assign("/login");
+    setSignOutFailed(false);
+    // Only a sign-out that happened leads to /login; otherwise the proxy would send the
+    // still-signed-in person straight back here.
+    if (!(await endEasyBookSession())) {
+      setSigningOut(false);
+      setSignOutFailed(true);
+      return;
     }
+    // A HARD navigation is the point (see the component comment).
+    // eslint-disable-next-line @next/next/no-location-assign-relative-destination
+    window.location.assign("/login");
   }
 
   return (
@@ -98,6 +104,11 @@ export function AccessEndedActions({
       <Button variant="secondary" onClick={() => void signOut()} loading={signingOut} loadingLabel="Signing out">
         Sign out
       </Button>
+      {signOutFailed ? (
+        <p role="alert" className="text-xs text-danger-600">
+          {SIGN_OUT_FAILED_MESSAGE}
+        </p>
+      ) : null}
     </div>
   );
 }

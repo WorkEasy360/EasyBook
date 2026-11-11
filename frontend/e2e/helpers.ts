@@ -8,6 +8,13 @@ import { expect, type Page } from "@playwright/test";
 export const EMAIL = process.env.E2E_EMAIL ?? "fe-test@easybook.local";
 export const PASSWORD = process.env.E2E_PASSWORD ?? "FrontendTest123!";
 
+/**
+ * The server under test sets its auth cookies Secure (`SESSION_COOKIE_SECURE=1`, as `next start` in
+ * production requires), so they carry the `__Host-` prefix (src/lib/auth/cookie-names.ts). Set
+ * `E2E_SESSION_COOKIE_SECURE=1` alongside it; development (`next dev`, Secure off) uses the plain names.
+ */
+export const COOKIE_PREFIX = process.env.E2E_SESSION_COOKIE_SECURE === "1" ? "__Host-" : "";
+
 export async function signIn(page: Page): Promise<void> {
   await page.goto("/login");
   await page.getByLabel("Email address").fill(EMAIL);

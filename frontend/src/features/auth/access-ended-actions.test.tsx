@@ -26,6 +26,28 @@ describe("AccessEndedActions", () => {
     expect(fetch).toHaveBeenCalledWith("/api/auth/logout", { method: "POST" });
   });
 
+  it.each([
+    ["the server refuses", () => new Response(null, { status: 403 })],
+    ["the server fails", () => new Response(null, { status: 500 })],
+  ])("stays and says so when the sign-out fails (%s)", async (_label, respond) => {
+    vi.stubGlobal("fetch", vi.fn(async () => respond()));
+    render(<AccessEndedActions />);
+    await userEvent.click(screen.getByRole("button", { name: "Sign out" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Could not sign you out. Please try again.");
+    expect(assign).not.toHaveBeenCalled();
+    expect(screen.getByRole("button", { name: "Sign out" })).toBeEnabled();
+  });
+
+  it("stays when the network fails during sign-out", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => {
+      throw new Error("offline");
+    }));
+    render(<AccessEndedActions />);
+    await userEvent.click(screen.getByRole("button", { name: "Sign out" }));
+    expect(await screen.findByRole("alert")).toBeInTheDocument();
+    expect(assign).not.toHaveBeenCalled();
+  });
+
   it("offers no switch to a person with a single organization", () => {
     render(<AccessEndedActions />);
     expect(screen.queryByText("Switch organization")).toBeNull();

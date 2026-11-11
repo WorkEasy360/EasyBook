@@ -1,14 +1,15 @@
 import type { NextResponse } from "next/server";
 import { cookies } from "next/headers";
 import { callUpstream, decodeJson } from "@/lib/api/upstream";
-import { cookieSecurity, readSession, writeOrganizationId, writeSession } from "@/lib/auth/session";
+import { cookieName } from "@/lib/auth/cookie-names";
 import {
-  SSO_FLOW_COOKIE,
-  SSO_FLOW_PATH,
-  backendErrorCode,
-  providerErrorCode,
-  safePath,
-} from "@/lib/auth/workeasy360";
+  clearSignedOutMarker,
+  cookieSecurity,
+  readSession,
+  writeOrganizationId,
+  writeSession,
+} from "@/lib/auth/session";
+import { backendErrorCode, providerErrorCode, safePath } from "@/lib/auth/workeasy360";
 import { redirectToPath } from "@/lib/redirect";
 import { clientIpFromHeaders } from "@/lib/security/client-ip";
 
@@ -25,9 +26,11 @@ import { clientIpFromHeaders } from "@/lib/security/client-ip";
 export async function GET(request: Request): Promise<NextResponse> {
   const url = new URL(request.url);
   const store = await cookies();
-  const kept = parseFlowCookie(store.get(SSO_FLOW_COOKIE)?.value);
+  // Only under this host's own name (`__Host-eb_sso` when Secure): a flow a sibling
+  // subdomain planted under the plain name is not ours and is never read.
+  const kept = parseFlowCookie(store.get(cookieName("ssoFlow"))?.value);
   // Single use, whatever happens next.
-  store.set(SSO_FLOW_COOKIE, "", { ...cookieSecurity(), path: SSO_FLOW_PATH, maxAge: 0 });
+  store.set(cookieName("ssoFlow"), "", { ...cookieSecurity(), maxAge: 0 });
 
   // Relative redirects only: request.url is this server's own address, not
   // the one the browser used (src/lib/redirect.ts).
@@ -75,6 +78,9 @@ export async function GET(request: Request): Promise<NextResponse> {
   }
 
   await writeSession({ access: result.access, refresh: result.refresh });
+  // Signed in: a later visit may start a sign-in by itself again. Only the sign-out marker goes;
+  // the loop guard expires on its own, so a browser that drops this session is still caught.
+  await clearSignedOutMarker();
   if (typeof result.organization_id === "string") await writeOrganizationId(result.organization_id);
 
   // A new organization still needs its fiscal year: requireSession() sends

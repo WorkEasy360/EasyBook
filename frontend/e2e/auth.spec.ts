@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { COOKIE_PREFIX } from "./helpers";
 
 /**
  * Critical E2E — authentication (spec §91).
@@ -68,8 +69,8 @@ test.describe("authentication", () => {
 
     // The session cookies exist and are httpOnly...
     const cookies = await context.cookies();
-    const access = cookies.find((cookie) => cookie.name === "eb_at");
-    const refresh = cookies.find((cookie) => cookie.name === "eb_rt");
+    const access = cookies.find((cookie) => cookie.name === `${COOKIE_PREFIX}eb_at`);
+    const refresh = cookies.find((cookie) => cookie.name === `${COOKIE_PREFIX}eb_rt`);
     expect(access?.httpOnly).toBe(true);
     expect(refresh?.httpOnly).toBe(true);
 
@@ -84,8 +85,8 @@ test.describe("authentication", () => {
 
   test("a dead session sends the user back to sign in", async ({ page, context }) => {
     await context.addCookies([
-      { name: "eb_at", value: "dead.token.x", domain: "127.0.0.1", path: "/" },
-      { name: "eb_rt", value: "dead.refresh.y", domain: "127.0.0.1", path: "/" },
+      { name: `${COOKIE_PREFIX}eb_at`, value: "dead.token.x", domain: "127.0.0.1", path: "/", secure: COOKIE_PREFIX !== "" },
+      { name: `${COOKIE_PREFIX}eb_rt`, value: "dead.refresh.y", domain: "127.0.0.1", path: "/", secure: COOKIE_PREFIX !== "" },
     ]);
 
     await page.goto("/dashboard");

@@ -5,6 +5,9 @@ once, an entitlement API answering ``self.entitlement`` - allow, by default -
 to a correctly authenticated client), so the client under test does every
 check it does in production."""
 
+import base64
+import hashlib
+import hmac
 import json
 import time
 import uuid
@@ -78,11 +81,14 @@ class FakeWorkeasy360:
         return jwt.encode(claims, key or _PROVIDER_KEYS[kid][0], algorithm=algorithm,
                           headers={"kid": kid, **(headers or {})})
 
-    def issue_code(self, *, nonce, claims=None, id_token=None, challenge_verifier=None):
-        """A code the token endpoint will exchange for this ID token."""
+    def issue_code(self, *, nonce, code_challenge, claims=None, id_token=None):
+        """A code the token endpoint will exchange for this ID token - for whoever proves they hold the
+        PKCE verifier of ``code_challenge`` (the S256 challenge the authorization request carried:
+        ``authorize_params(request.url)["code_challenge"]``). A code is bound to its challenge, as it is
+        at the real provider, so a test cannot forget PKCE by accident."""
         code = uuid.uuid4().hex
         token = id_token or self.sign({**(claims or self.claims()), "nonce": nonce})
-        self.codes[code] = {"id_token": token, "verifier": challenge_verifier}
+        self.codes[code] = {"id_token": token, "challenge": code_challenge}
         return code
 
     # --- the transport the client calls -----------------------------------
@@ -141,8 +147,13 @@ class FakeWorkeasy360:
             return 401, {"error": "invalid_client"}
         if form.get("redirect_uri") != REDIRECT_URI or form.get("grant_type") != "authorization_code":
             return 400, {"error": "invalid_grant"}
-        issued = self.codes.pop(form.get("code"), None)  # single use
+        issued = self.codes.pop(form.get("code"), None)  # single use, spent even by a failed exchange
         if issued is None:
+            return 400, {"error": "invalid_grant"}
+        # PKCE (RFC 7636 section 4.6): S256 of the verifier must equal the challenge the code was bound to.
+        verifier = form.get("code_verifier") or ""
+        derived = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).rstrip(b"=").decode()
+        if not verifier or not hmac.compare_digest(derived, issued["challenge"]):
             return 400, {"error": "invalid_grant"}
         return 200, {"id_token": issued["id_token"], "access_token": "opaque", "token_type": "Bearer"}
 

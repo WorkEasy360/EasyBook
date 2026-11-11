@@ -13,11 +13,15 @@ import { sameSitePath } from "@/lib/redirect";
 
 /**
  * What the sign-in must remember while the browser is at Workeasy360: the
- * Django-signed flow blob (state, nonce, PKCE verifier) and where to land.
- * Scoped to the callback path, so no other request ever carries it.
+ * Django-signed flow blob (state, nonce, PKCE verifier) and where to land,
+ * kept in an httpOnly cookie for SSO_FLOW_MAX_AGE_SECONDS. Its name is
+ * `cookieName("ssoFlow")` - `__Host-eb_sso` whenever cookies are Secure - and
+ * that is what makes it trustworthy: a cookie a sibling subdomain plants under
+ * the plain name is never read, so nobody can hand a victim the attacker's own
+ * flow and sign them into the attacker's books (src/lib/auth/cookie-names.ts).
+ * A `__Host-` cookie must have Path=/, so it is no longer scoped to the
+ * callback path; it is single-use, signed, and gone after ten minutes.
  */
-export const SSO_FLOW_COOKIE = "eb_sso";
-export const SSO_FLOW_PATH = "/api/auth/callback/workeasy360";
 /** Mirrors sso.flow.FLOW_MAX_AGE_SECONDS in the backend. */
 export const SSO_FLOW_MAX_AGE_SECONDS = 600;
 
@@ -29,17 +33,17 @@ export interface SignInMethods {
 }
 
 /**
- * Asks Django which sign-in methods to offer. If it cannot be reached, the
- * page falls back to showing both: the buttons still go through Django, which
- * refuses whatever is switched off, so guessing wrong costs a message, never a
- * bypass.
+ * Asks Django which sign-in methods are on, or null when it cannot be asked
+ * (unreachable, timed out, not a 200). Callers choose what to assume.
  */
-export async function readSignInMethods(options: { revalidateSeconds?: number } = {}): Promise<SignInMethods> {
+export async function fetchSignInMethods(
+  options: { revalidateSeconds?: number; timeoutMs?: number } = {},
+): Promise<SignInMethods | null> {
   try {
     const response = await callUpstream({
       path: "/auth/methods/",
       ...(options.revalidateSeconds ? { next: { revalidate: options.revalidateSeconds } } : { cache: "no-store" as const }),
-      timeoutMs: 5_000,
+      timeoutMs: options.timeoutMs ?? 5_000,
     });
     const body = decodeJson(response) as { password?: unknown; workeasy360?: unknown; workeasy360_sign_out?: unknown } | null;
     if (response.status === 200 && body) {
@@ -52,9 +56,19 @@ export async function readSignInMethods(options: { revalidateSeconds?: number } 
   } catch {
     // fall through
   }
+  return null;
+}
+
+/**
+ * Asks Django which sign-in methods to offer. If it cannot be reached, the
+ * page falls back to showing both: the buttons still go through Django, which
+ * refuses whatever is switched off, so guessing wrong costs a message, never a
+ * bypass.
+ */
+export async function readSignInMethods(options: { revalidateSeconds?: number } = {}): Promise<SignInMethods> {
   // Never offer signing out of Workeasy360 on a guess: it is a navigation that
   // would land on an error if it is not configured.
-  return { password: true, workeasy360: true, workeasy360SignOut: false };
+  return (await fetchSignInMethods(options)) ?? { password: true, workeasy360: true, workeasy360SignOut: false };
 }
 
 export { WORKEASY360_SIGN_OUT_PATH } from "./workeasy360-paths";

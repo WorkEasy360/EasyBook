@@ -5,6 +5,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from core.exceptions import ApplicationError
+from core.throttling import FailOpenScopedRateThrottle
 from sso import flow
 from sso.config import (
     get_client,
@@ -74,11 +75,19 @@ class Workeasy360EndSessionView(APIView):
 
 class Workeasy360StartView(APIView):
     """Called by the BFF, which sends the browser to `authorization_url` and
-    keeps `flow` in an httpOnly cookie until the callback."""
+    keeps `flow` in an httpOnly cookie until the callback.
+
+    Its own throttle scope, not the "auth" bucket the callback (and password
+    sign-in) share. A direct visit starts a sign-in by itself (frontend
+    src/proxy.ts), so starts are routine - an office behind one address, an
+    uptime check - and must not use up the 20/min that protects the callback,
+    where a code is exchanged. The scoped throttle is the only one here: the
+    blanket anonymous bucket would count the same request a second time."""
 
     permission_classes = [AllowAny]
     authentication_classes = []
-    throttle_scope = "auth"
+    throttle_classes = [FailOpenScopedRateThrottle]
+    throttle_scope = "sso_start"
 
     def post(self, request):
         if not is_configured():

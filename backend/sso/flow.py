@@ -47,10 +47,12 @@ def complete(*, code: str, state: str, flow: str) -> dict:
     claims = client.complete(
         code=code, returned_state=state, expected_state=kept["s"], nonce=kept["n"], code_verifier=kept["v"],
     )
-    expected_product = settings.WORKEASY360_PRODUCT_CODE
-    if expected_product and claims.get("product_code") != expected_product:
+    expected_product = (settings.WORKEASY360_PRODUCT_CODE or "").strip()
+    if not expected_product or claims.get("product_code") != expected_product:
         # The audience check already ties the token to our client id; this
-        # catches a client id registered to the wrong product.
+        # catches a client id registered to the wrong product. With no product
+        # code configured nothing can match: the check fails closed rather
+        # than being skipped (sso/checks.py refuses to start in that state).
         raise SSOError("wrong_product", f"token is for {claims.get('product_code')!r}")
     if kept.get("o") and str(claims["organization_id"]) != kept["o"]:
         # The launcher asked for one organization and the provider answered

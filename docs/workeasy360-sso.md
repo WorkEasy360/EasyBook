@@ -7,7 +7,7 @@ EasyBook is a Workeasy360 product. People sign in with the same email and passwo
 ## How a sign-in works
 
 1. The user clicks **Continue with Workeasy360** on `/login`, or opens EasyBook from the Workeasy360 app launcher (`https://book.workeasy360.com/?organization=<uuid>`).
-2. The BFF route `/api/auth/workeasy360/start` asks Django for an authorization URL. Django generates state, nonce and a PKCE verifier and returns them sealed in a signed `flow` blob. The BFF keeps the blob in an httpOnly cookie, `eb_sso`, scoped to the callback path and valid for 10 minutes, then redirects the browser to Workeasy360.
+2. The BFF route `/api/auth/workeasy360/start` asks Django for an authorization URL. Django generates state, nonce and a PKCE verifier and returns them sealed in a signed `flow` blob. The BFF keeps the blob in an httpOnly cookie, `__Host-eb_sso` (see "Cookie names" below), valid for 10 minutes, then redirects the browser to Workeasy360.
 3. The user signs in at Workeasy360, including any second factor. If they came from the launcher, Workeasy360 already knows the organization; otherwise it shows its organization chooser.
 4. Workeasy360 checks the membership, that the organization has EasyBook (trial or paid), and the seat. It then redirects to `/api/auth/callback/workeasy360?code=…&state=…`.
 5. The BFF relays the code, the state and the kept flow to Django. Django:
@@ -60,6 +60,8 @@ manage.py link_workeasy360_organization <easybook-organization-id> <workeasy360-
 | `WORKEASY360_KEY_ID` | The credential id from step 2 |
 | `WORKEASY360_PRIVATE_KEY_FILE` (or `WORKEASY360_PRIVATE_KEY`) | The private key. Inline PEM may use literal `\n` |
 | `WORKEASY360_SSO_ONLY` | `1` (the default). Production refuses to start if it is on while any value above is missing |
+| `WORKEASY360_PRODUCT_CODE` | Optional, default `easybook`: the product code a token must name. **Must not be empty**: production refuses to start, and so does `manage.py check` in every environment (`sso.E001`), because the product binding check would otherwise have nothing to compare with. The sign-in itself also fails closed (`wrong_product`) when it is empty |
+| `THROTTLE_SSO_START` | Optional, default `60/min` per client address: the rate limit of the sign-in **start** endpoint (its own scope, `sso_start`). The callback and password sign-in keep `THROTTLE_AUTH` (`20/min`) |
 | `WORKEASY360_DEFAULT_ROLE` | Optional. Role for people joining an existing organization (default `staff`) |
 | `WORKEASY360_DEFAULT_CURRENCY` | Optional. Currency of a newly provisioned organization (default `INR`) |
 
@@ -116,13 +118,66 @@ Not jobs: EasyBook sends no e-mail or reminders and has no external-sync task (b
 
 Consequences worth knowing: after a long denial, a renewal produces one burst of catch-up recurring drafts (reviewable, never posted) and the stale undispatched events fire their rules once. That is deliberate: skipping must not lose work, and every generator is idempotent per occurrence.
 
+## Opening EasyBook directly (SSO-only)
+
+A person already signed in to Workeasy360 who types `https://book.workeasy360.com/` (or any EasyBook page) arrives signed in: no EasyBook sign-in page, no password. This is the Workeasy360 integration guide §6b (`docs/phase-3/09-product-integration-guide.md`, `docs/universal-sso/one-login.md`). It applies only while EasyBook is **SSO-only**; otherwise nothing changes (a visitor without a session goes to `/login`, which offers both ways in).
+
+**What happens.** `src/proxy.ts` sees a page navigation from a browser with no session cookies. Instead of `/login?next=<page>` it redirects to EasyBook's own `/api/auth/workeasy360/start?next=<page>` (no organization hint; `/` carries no `next`). That is the sign-in described above. Workeasy360 then completes it silently when it has a session and the person's preference is Automatic (the default), asks first when the preference is "Ask me each time", and shows its central sign-in when it has no session. The person lands on the page they asked for.
+
+**How SSO-only is known.** The proxy asks Django, which owns the setting: `GET /api/v1/auth/methods/` answers `password: false` and `workeasy360: true` exactly when `WORKEASY360_SSO_ONLY` is on and the integration is configured (`src/lib/auth/sso-only.ts`). The answer is kept in the Next.js server process for 60 s and shared by concurrent requests, so the backend is asked about once a minute, and only when a visitor without a session arrives. There is no second setting to keep in step. If Django cannot be asked, the last answer stands; with none, EasyBook is treated as **not** SSO-only, so the visitor gets the sign-in page as before. Not knowing never starts a sign-in.
+
+**It never starts by itself** in these cases; the visitor is shown the sign-in page (**Access EasyBook** / **Continue with Workeasy360**) instead:
+
+(Cookie names below are the plain ones; with Secure cookies they carry the `__Host-` prefix, see "Cookie names".)
+
+| Case | How it is decided |
+|---|---|
+| On the sign-in pages (`/login`, `/register`, `/forgot-password`), whatever the query, including `?sso_error=` and `?reason=expired` | They are public paths, answered before any of this runs. **The sign-in page never auto-starts.** |
+| After the person signed out of EasyBook in this browser | The cookie `eb_signed_out` (value `1`, httpOnly, SameSite=Lax, **a session cookie: no Max-Age**, so every tab and the proxy see it for one browser session). Both **Sign out of EasyBook** and **Sign out of EasyBook and Workeasy360** leave it: `POST /api/auth/logout` sets it (the combined sign-out calls that first), and `/api/auth/workeasy360/logout` sets it again, but only for a request from EasyBook's own pages (`Sec-Fetch-Site: same-origin`, or no such header), so a link on another site or a sibling subdomain cannot set it. It stays until the person **signs in to EasyBook again**: the callback and the password sign-in both clear it. A sign-out therefore never ends in a silent sign-in. The launcher (`/?organization=`) and the buttons on the sign-in page still start a sign-in, because the person asked for one. |
+| This browser already started automatically less than 60 s ago and still has no session (the **loop guard**) | The cookie `eb_sso_auto` (httpOnly, SameSite=Lax, Max-Age 60) holds the time of the start; the proxy sets it on the redirect that auto-starts. A dropped cookie, or a failure Workeasy360 did not report as `?sso_error=`, ends at the sign-in page instead of looping. A cookie it cannot read counts as recent. A sign-in does **not** clear it: it expires by itself after its 60 s, so a browser that drops the session it was just given is still caught. |
+| A session exists | The proxy only auto-starts when there is no session at all (the access and refresh cookies are not both present). A person whose access ended keeps their session and the **/access-ended** explanation (see "After sign-in" above); a session the API rejects ends at `/login?reason=expired`, which never starts. A session is never replaced silently. |
+| Not a page navigation | Only `GET` document navigations start a sign-in (`Sec-Fetch-Mode: navigate` + `Sec-Fetch-Dest: document`, or, where a browser sends no `Sec-Fetch-*` header, `Accept: text/html`). `/api/...` routes and the BFF are not served by the proxy at all (its matcher excludes `api/`), and fetches, Next.js client-side navigations and prefetches (`RSC`, `Next-Router-Prefetch`), frames and browser prefetches (`Sec-Purpose`) are never redirected to Workeasy360; they get the answer they always did. |
+
+**`next` stays a same-site path.** The page asked for goes through `sameSitePath` (`src/lib/redirect.ts`) before it is put into the start URL, and the start route checks it again. A path that does not pass (`//evil.example`, a backslash, a tab) is dropped and sign-in lands on the dashboard.
+
+**The redirect is relative.** The proxy builds it like its other redirects: Next.js turns a same-origin redirect from the proxy into a relative `Location`, so it never names the address the server listens on (`localhost:3000` behind the production proxy). The route handlers use `redirectToPath` for the same reason (next section).
+
+**For the operator.** Nothing to configure. The two cookies carry no secret and no identity. If a deployment ever needs this switched off while keeping SSO-only, the lever is `src/proxy.ts` (`autoStartRedirect`); there is deliberately no setting for it, because a second setting could disagree with `WORKEASY360_SSO_ONLY`. Tests: `src/proxy.test.ts` ("someone opens EasyBook directly"), `src/lib/auth/direct-visit.test.ts`, `src/lib/auth/sso-only.test.ts`.
+
+## Cookie names: `__Host-` (a compromised sibling subdomain)
+
+Every Workeasy360 product is a sibling subdomain of `workeasy360.com`. A cookie another product (or anything else under that domain) sets with `Domain=.workeasy360.com` is sent to EasyBook too, and under a plain name it is indistinguishable from EasyBook's own, with the last duplicate winning in Next.js's parser. A compromised sibling could plant its own `eb_sso` flow and send a victim to the callback with the attacker's code and state, signing the victim in to the attacker's books past the state check (a login CSRF), or plant `eb_at` / `eb_rt` to the same effect.
+
+So with `SESSION_COOKIE_SECURE=1` (which production requires) **every authentication cookie carries the `__Host-` prefix**. A browser accepts such a cookie only when it is set `Secure`, with `Path=/` and **no `Domain`**, which is to say only by this exact host: a sibling cannot set one. A cookie under the plain name is never read.
+
+| Cookie | Name when Secure | Plain name (development, no Secure) |
+|---|---|---|
+| Access token | `__Host-eb_at` | `eb_at` |
+| Refresh token | `__Host-eb_rt` | `eb_rt` |
+| Organization choice | `__Host-eb_org` | `eb_org` |
+| Sign-in flow (state, nonce, PKCE verifier; signed; 10 min) | `__Host-eb_sso` | `eb_sso` |
+| Signed-out marker | `__Host-eb_signed_out` | `eb_signed_out` |
+| Loop guard | `__Host-eb_sso_auto` | `eb_sso_auto` |
+
+`eb_sso` is no longer scoped to the callback path: `__Host-` requires `Path=/`. It stays httpOnly, single-use and signed by Django. All names come from one function (`cookieName()`, `src/lib/auth/cookie-names.ts`); nothing hard-codes them. Without Secure (local development over plain http) the prefix is not possible and the plain names stay.
+
+**On deploy, everyone is signed out of EasyBook once.** The session an earlier version kept under the plain names is not read any more. People come back silently through Workeasy360 (their next visit starts a sign-in, and Workeasy360 answers from its own session), or sign in again. The old cookies are expired the next time a session is written or ended. Nothing needs doing by the operator; announce it if you have long-lived sessions you care about.
+
+## Starting a sign-in has its own rate limit
+
+Because a direct visit starts a sign-in by itself, starts are routine (an office behind one address, an uptime check). `POST /auth/workeasy360/start/` therefore has its own throttle scope, `sso_start` (`THROTTLE_SSO_START`, default `60/min` per client address), instead of sharing the `auth` bucket (`THROTTLE_AUTH`, `20/min`) with the callback and password sign-in. The callback keeps the `auth` limit, and starts no longer use it up. The start view is limited by its scope alone; the blanket anonymous limit would count the same request a second time.
+
+## ID token checks beyond the seven steps
+
+`azp` and a list-valued `aud` (OpenID Connect Core 3.1.3.7): an `azp` that is present must equal this client's id, and an `aud` that names anybody besides this client is accepted only with an `azp` that names this client. The product binding (`product_code`) is never skipped: an empty `WORKEASY360_PRODUCT_CODE` stops the process (see the table above). Tests: `backend/sso/tests/test_oidc.py` (`AuthorizedPartyTests`, `ProofOfPossessionTests`: a wrong PKCE verifier is refused by the fake provider's token endpoint, which verifies S256 like the real one; a known `kid` with a forged RS256 signature, and a genuine token with a swapped payload, are refused).
+
 ## Redirects from the SSO routes are relative
 
 `/api/auth/workeasy360/start`, `/api/auth/callback/workeasy360` and `/api/auth/workeasy360/logout` redirect to EasyBook's own pages with a relative `Location` (`src/lib/redirect.ts`). Every target, `next` after sign-in included, goes through one check (`sameSitePath`): no whitespace, control character or backslash anywhere - a browser strips a tab, so `/<tab>/evil.example` would become `//evil.example` - and it must resolve on the same site. In a route handler Next.js builds `request.url` from the address the server listens on, not the one the browser used. Behind the production proxy (`HOSTNAME=0.0.0.0`) `new URL(path, request.url)` sent every sign-in to `http://localhost:3000`.
 
 ## What this does not do yet
 
-- **Single sign-out.** Signing out of EasyBook ends the EasyBook session only. While the Workeasy360 session is still alive, the next **Continue with Workeasy360** signs straight back in.
+- **Single sign-out.** Signing out of EasyBook ends the EasyBook session only. While the Workeasy360 session is still alive, the next **Continue with Workeasy360** signs straight back in (typing EasyBook's address does not: the sign-out marker shows the sign-in page first).
 - **Member management.** EasyBook still has no invite or role-change screens. People arrive through Workeasy360, and roles beyond the default need a backend change or the Django admin.
 
 ## Universal sign-in: what the person controls (2026-10-12)
@@ -133,7 +188,9 @@ Nothing about that choice lives in EasyBook; what it means here:
 
 - **The sign-in page** asks "Already a Workeasy360 user?" with **Access EasyBook**. When password
   sign-in is also on, EasyBook's own form is behind **Use another sign-in method** (`/login?method=password`,
-  a plain link).
+  a plain link). **The sign-in page never starts a Workeasy360 sign-in by itself**, whatever its query
+  (`?sso_error=`, `?reason=expired`): it is where a refusal, an expired session or a sign-out ends. A visit to
+  any other page with no session is what starts one (see "Opening EasyBook directly").
 - **Workeasy360's access chooser.** When the person's preference is to be asked, Workeasy360 shows its own
   "How would you like to access EasyBook?" page before returning a code. EasyBook sees nothing new: the
   usual callback, or `error=access_denied` when the person chose Cancel (shown as `cancelled`). EasyBook is
@@ -141,7 +198,9 @@ Nothing about that choice lives in EasyBook; what it means here:
   sign-in" for it.
 - **Error codes added on the Workeasy360 side:** `unauthorized_client` maps to `unavailable`;
   `interaction_required` and `login_required` map to `expired`.
-- **Sign-out.** "Sign out of EasyBook" ends EasyBook's session (the refresh token is revoked). With
+- **Sign-out.** Both sign-outs go on only after EasyBook's own session has really ended (`POST /api/auth/logout` answered OK); if it did not, the menu (or the access-ended page) stays where it is and says "Could not sign you out. Please try again.", and nothing continues to Workeasy360. Both leave the `eb_signed_out` marker (see "Opening EasyBook directly"), so
+  typing EasyBook's address afterwards shows the sign-in page instead of signing straight back in until the
+  person signs in again. "Sign out of EasyBook" ends EasyBook's session (the refresh token is revoked). With
   `WORKEASY360_POST_LOGOUT_REDIRECT_URI` set (and registered in Workeasy360 as a post-logout URI of the
   EasyBook integration), the account menu also offers **Sign out of EasyBook and Workeasy360**: EasyBook's
   session ends first, then the BFF route `/api/auth/workeasy360/logout` sends the browser to Workeasy360's

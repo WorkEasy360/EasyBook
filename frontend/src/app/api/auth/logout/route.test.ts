@@ -3,9 +3,10 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const readSession = vi.fn();
 const clearSession = vi.fn();
+const markSignedOut = vi.fn();
 const callUpstream = vi.fn();
 
-vi.mock("@/lib/auth/session", () => ({ readSession, clearSession }));
+vi.mock("@/lib/auth/session", () => ({ readSession, clearSession, markSignedOut }));
 vi.mock("@/lib/api/upstream", () => ({ callUpstream }));
 
 const { POST } = await import("./route");
@@ -21,6 +22,7 @@ describe("POST /api/auth/logout", () => {
   beforeEach(() => {
     readSession.mockReset();
     clearSession.mockReset();
+    markSignedOut.mockReset();
     callUpstream.mockReset();
   });
 
@@ -59,6 +61,27 @@ describe("POST /api/auth/logout", () => {
     expect(clearSession).toHaveBeenCalledTimes(1);
   });
 
+  it.each([
+    ["with a session", { access: "a", refresh: "r", organizationId: null }],
+    ["without one", null],
+  ])("leaves the sign-out marker, so a visit is not signed straight back in (%s)", async (_label, session) => {
+    readSession.mockResolvedValue(session);
+    callUpstream.mockResolvedValue({ status: 204 });
+
+    await POST(logoutRequest());
+
+    expect(markSignedOut).toHaveBeenCalledTimes(1);
+  });
+
+  it("leaves the marker even when the API cannot be reached", async () => {
+    readSession.mockResolvedValue({ access: "a", refresh: "r", organizationId: null });
+    callUpstream.mockRejectedValue(new Error("ECONNREFUSED"));
+
+    await POST(logoutRequest());
+
+    expect(markSignedOut).toHaveBeenCalledTimes(1);
+  });
+
   it("refuses a cross-site sign-out without touching the session", async () => {
     readSession.mockResolvedValue({ access: "a", refresh: "r", organizationId: null });
 
@@ -67,5 +90,6 @@ describe("POST /api/auth/logout", () => {
     expect(response.status).toBe(403);
     expect(callUpstream).not.toHaveBeenCalled();
     expect(clearSession).not.toHaveBeenCalled();
+    expect(markSignedOut).not.toHaveBeenCalled();
   });
 });

@@ -117,7 +117,7 @@ def validate_production_settings(
 
 
 def validate_workeasy360_settings(
-    *, sso_only, issuer, client_id, redirect_uri, key_id, has_private_key, post_logout_redirect_uri=""
+    *, sso_only, issuer, client_id, redirect_uri, key_id, has_private_key, product_code, post_logout_redirect_uri=""
 ):
     """Workeasy360 sign-in in production (sso/).
 
@@ -127,6 +127,13 @@ def validate_workeasy360_settings(
     the issuer and redirect URI must be https (the provider itself refuses a
     non-loopback http redirect URI in production).
     """
+    if not (product_code or "").strip():
+        # The sign-in refuses a token whose product_code is not this one. With none configured that check
+        # has nothing to compare with - the process must not start rather than admit any product's token.
+        raise RuntimeError(
+            "WORKEASY360_PRODUCT_CODE must not be empty: it is the product code a Workeasy360 token must name "
+            "(default 'easybook'), and the sign-in cannot tell this product's tokens from another's without it."
+        )
     configured = [bool(issuer), bool(client_id), bool(redirect_uri), bool(key_id), bool(has_private_key)]
     if sso_only and not all(configured):
         raise RuntimeError(

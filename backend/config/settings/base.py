@@ -380,6 +380,9 @@ REST_FRAMEWORK = {
     ),
     "DEFAULT_THROTTLE_RATES": {
         "auth": env("THROTTLE_AUTH", default="20/min"),
+        # Starting a Workeasy360 sign-in (sso.views.Workeasy360StartView): routine, since a direct visit
+        # starts one by itself. Apart from "auth", which keeps protecting the callback and password sign-in.
+        "sso_start": env("THROTTLE_SSO_START", default="60/min"),
         "burst": env("THROTTLE_BURST", default="60/min"),
         # Starting points, not load-tested SLOs (phase 12 section 59-60) —
         # tighten/loosen once real traffic gives a baseline.

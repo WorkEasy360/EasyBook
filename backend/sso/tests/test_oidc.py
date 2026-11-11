@@ -27,9 +27,16 @@ class ClientTestCase(SimpleTestCase):
             private_key_pem=CLIENT_PRIVATE_PEM, key_id=KEY_ID, transport=self.provider.transport,
         )
 
+    def issue(self, request, **kwargs):
+        """A code bound to this request's PKCE challenge, as the provider binds it."""
+        return self.provider.issue_code(
+            nonce=kwargs.pop("nonce", request.nonce), code_challenge=authorize_params(request.url)["code_challenge"],
+            **kwargs,
+        )
+
     def sign_in(self, **claim_overrides):
         request = self.client_.authorization_request()
-        code = self.provider.issue_code(nonce=request.nonce, claims=self.provider.claims(**claim_overrides))
+        code = self.issue(request, claims=self.provider.claims(**claim_overrides))
         return self.client_.complete(code=code, returned_state=request.state, expected_state=request.state,
                                      nonce=request.nonce, code_verifier=request.code_verifier)
 
@@ -93,7 +100,7 @@ class CompleteTests(ClientTestCase):
 
     def test_a_code_is_spent_once(self):
         request = self.client_.authorization_request()
-        code = self.provider.issue_code(nonce=request.nonce)
+        code = self.issue(request)
         kwargs = {"code": code, "returned_state": request.state, "expected_state": request.state,
                   "nonce": request.nonce, "code_verifier": request.code_verifier}
         self.client_.complete(**kwargs)
@@ -118,7 +125,7 @@ class CompleteTests(ClientTestCase):
 
     def test_nonce_from_another_session_is_refused(self):  # step 7
         request = self.client_.authorization_request()
-        code = self.provider.issue_code(nonce="someone-elses-nonce")
+        code = self.issue(request, nonce="someone-elses-nonce")
         self.assert_refused("invalid_token", lambda: self.client_.complete(
             code=code, returned_state=request.state, expected_state=request.state, nonce=request.nonce,
             code_verifier=request.code_verifier))
@@ -130,7 +137,7 @@ class CompleteTests(ClientTestCase):
         request = self.client_.authorization_request()
         token = self.provider.sign({**self.provider.claims(), "nonce": request.nonce}, algorithm="HS256",
                                    key="a-shared-secret-of-sufficient-length-for-hs256")
-        code = self.provider.issue_code(nonce=request.nonce, id_token=token)
+        code = self.issue(request, id_token=token)
         self.assert_refused("invalid_token", lambda: self.client_.complete(
             code=code, returned_state=request.state, expected_state=request.state, nonce=request.nonce,
             code_verifier=request.code_verifier))
@@ -140,7 +147,7 @@ class CompleteTests(ClientTestCase):
         fetches = sum(url.endswith("/jwks.json") for _, url in self.provider.calls)
         request = self.client_.authorization_request()
         token = self.provider.sign({**self.provider.claims(), "nonce": request.nonce}, kid="provider-2")
-        code = self.provider.issue_code(nonce=request.nonce, id_token=token)
+        code = self.issue(request, id_token=token)
         self.assert_refused("invalid_token", lambda: self.client_.complete(
             code=code, returned_state=request.state, expected_state=request.state, nonce=request.nonce,
             code_verifier=request.code_verifier))
@@ -154,3 +161,77 @@ class CompleteTests(ClientTestCase):
 
     def test_token_without_organization_is_refused(self):
         self.assert_refused("invalid_token", lambda: self.sign_in(organization_id=None))
+
+
+class ProofOfPossessionTests(ClientTestCase):
+    """PKCE and the signature: the two things that stop a stolen code or a forged token."""
+
+    def test_a_wrong_pkce_verifier_is_refused_by_the_token_endpoint(self):
+        request = self.client_.authorization_request()
+        code = self.issue(request)
+        other_verifier, _ = pkce_pair()
+        self.assert_refused("sign_in_refused", lambda: self.client_.complete(
+            code=code, returned_state=request.state, expected_state=request.state, nonce=request.nonce,
+            code_verifier=other_verifier))
+
+    def test_a_missing_pkce_verifier_is_refused_by_the_token_endpoint(self):
+        request = self.client_.authorization_request()
+        code = self.issue(request)
+        self.assert_refused("sign_in_refused", lambda: self.client_.complete(
+            code=code, returned_state=request.state, expected_state=request.state, nonce=request.nonce,
+            code_verifier=""))
+
+    def test_the_right_verifier_is_accepted_and_the_fake_checks_it(self):
+        # Guards the guard: the two refusals above only mean something if the fake lets the right one through.
+        self.assertEqual(self.sign_in()["sub"], "w360-user-1")
+
+    def test_a_known_kid_with_a_forged_rs256_signature_is_refused(self):
+        # The kid and the algorithm are the provider's; the signature is an attacker's own RSA key.
+        request = self.client_.authorization_request()
+        forged = self.provider.sign(
+            {**self.provider.claims(), "nonce": request.nonce}, kid="provider-1", algorithm="RS256",
+            key=CLIENT_PRIVATE_PEM,
+        )
+        self.assertEqual(jwt.get_unverified_header(forged)["kid"], "provider-1")
+        code = self.issue(request, id_token=forged)
+        self.assert_refused("invalid_token", lambda: self.client_.complete(
+            code=code, returned_state=request.state, expected_state=request.state, nonce=request.nonce,
+            code_verifier=request.code_verifier))
+
+    def test_a_genuine_token_with_a_swapped_payload_is_refused(self):
+        request = self.client_.authorization_request()
+        genuine = self.provider.sign({**self.provider.claims(), "nonce": request.nonce})
+        header, _payload, signature = genuine.split(".")
+        other = self.provider.sign({**self.provider.claims(sub="someone-else"), "nonce": request.nonce})
+        swapped = ".".join([header, other.split(".")[1], signature])
+        code = self.issue(request, id_token=swapped)
+        self.assert_refused("invalid_token", lambda: self.client_.complete(
+            code=code, returned_state=request.state, expected_state=request.state, nonce=request.nonce,
+            code_verifier=request.code_verifier))
+
+
+class AuthorizedPartyTests(ClientTestCase):
+    """OIDC Core 3.1.3.7: ``azp`` and a list-valued ``aud``."""
+
+    def test_an_azp_naming_another_client_is_refused(self):
+        self.assert_refused("invalid_token", lambda: self.sign_in(azp="another-product"))
+
+    def test_an_azp_naming_this_client_is_accepted(self):
+        self.assertEqual(self.sign_in(azp=CLIENT_ID)["sub"], "w360-user-1")
+
+    def test_an_audience_list_of_only_this_client_is_accepted(self):
+        self.assertEqual(self.sign_in(aud=[CLIENT_ID])["sub"], "w360-user-1")
+
+    def test_other_audiences_with_no_azp_are_refused(self):
+        self.assert_refused("invalid_token", lambda: self.sign_in(aud=[CLIENT_ID, "another-product"]))
+
+    def test_other_audiences_with_an_azp_naming_this_client_are_accepted(self):
+        self.assertEqual(self.sign_in(aud=[CLIENT_ID, "another-product"], azp=CLIENT_ID)["sub"], "w360-user-1")
+
+    def test_other_audiences_with_an_azp_naming_somebody_else_are_refused(self):
+        self.assert_refused(
+            "invalid_token", lambda: self.sign_in(aud=[CLIENT_ID, "another-product"], azp="another-product")
+        )
+
+    def test_an_audience_list_without_this_client_is_still_refused(self):
+        self.assert_refused("invalid_token", lambda: self.sign_in(aud=["another-product"], azp=CLIENT_ID))

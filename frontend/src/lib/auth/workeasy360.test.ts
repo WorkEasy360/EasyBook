@@ -73,4 +73,35 @@ describe("sign-in methods", () => {
     });
     expect(vi.mocked(upstream.callUpstream).mock.lastCall?.[0]).toMatchObject({ next: { revalidate: 300 } });
   });
+
+  // The proxy decides on this (src/lib/auth/sso-only.ts): "could not ask" must stay distinct from an answer.
+  it("fetchSignInMethods says null, not a guess, when Django cannot be asked", async () => {
+    const upstream = await import("@/lib/api/upstream");
+    const { fetchSignInMethods } = await import("./workeasy360");
+
+    vi.mocked(upstream.callUpstream).mockRejectedValueOnce(new Error("ECONNREFUSED"));
+    expect(await fetchSignInMethods()).toBeNull();
+
+    vi.mocked(upstream.callUpstream).mockResolvedValueOnce({ status: 503 } as never);
+    vi.mocked(upstream.decodeJson).mockReturnValueOnce(null);
+    expect(await fetchSignInMethods()).toBeNull();
+  });
+
+  it("fetchSignInMethods reads the answer and honours a shorter timeout", async () => {
+    const upstream = await import("@/lib/api/upstream");
+    vi.mocked(upstream.callUpstream).mockResolvedValueOnce({ status: 200 } as never);
+    vi.mocked(upstream.decodeJson).mockReturnValueOnce({ password: false, workeasy360: true });
+    const { fetchSignInMethods } = await import("./workeasy360");
+
+    expect(await fetchSignInMethods({ timeoutMs: 3_000 })).toEqual({
+      password: false,
+      workeasy360: true,
+      workeasy360SignOut: false,
+    });
+    expect(vi.mocked(upstream.callUpstream).mock.lastCall?.[0]).toMatchObject({
+      path: "/auth/methods/",
+      timeoutMs: 3_000,
+      cache: "no-store",
+    });
+  });
 });
