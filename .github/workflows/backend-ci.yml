@@ -112,6 +112,11 @@ jobs:
           cache: pip
           cache-dependency-path: backend/requirements.txt
 
+      - name: Verify vendored wheels
+        # requirements.txt installs the private WorkEasy360 sign-in connector
+        # from vendor/ by path; its hash is pinned in vendor/SHA256SUMS.
+        run: cd vendor && sha256sum -c SHA256SUMS
+
       - name: Install dependencies
         run: pip install -r requirements.txt
 

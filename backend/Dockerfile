@@ -24,6 +24,11 @@ WORKDIR /build
 # ships in a production image, so a runtime container never carries a linter
 # or the tools that scan for one (backend/CLAUDE.md "QUALITY GATE").
 COPY requirements.txt .
+# Wheels that are on no public index (the private WorkEasy360 sign-in
+# connector), installed by path from requirements.txt. Their hashes are
+# checked first, so a wheel swapped in the build context fails the build.
+COPY vendor/ vendor/
+RUN cd vendor && sha256sum -c SHA256SUMS
 RUN python -m venv /opt/venv \
     && /opt/venv/bin/pip install --upgrade pip setuptools wheel \
     && /opt/venv/bin/pip install -r requirements.txt
