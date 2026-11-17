@@ -4,18 +4,20 @@
 
 EasyBook is a Workeasy360 product. People sign in with the same email and password they use for Workeasy360; EasyBook never sees that password. With `WORKEASY360_SSO_ONLY` on (the default outside local development), it is the only way in: EasyBook's own password sign-in, self-registration and "create an organization" are switched off, because people, plans and organizations are managed in Workeasy360.
 
+The OpenID Connect protocol itself is the shared **workeasy360-sso** connector (Django app `workeasy360_sso`, version 0.3.1, vendored in `backend/vendor/`); EasyBook keeps its own routes, error codes, provisioning and enforcement rules around it. See "The workeasy360-sso connector and back-channel logout" below.
+
 ## How a sign-in works
 
 1. The user clicks **Continue with Workeasy360** on `/login`, or opens EasyBook from the Workeasy360 app launcher (`https://book.workeasy360.com/?organization=<uuid>`).
-2. The BFF route `/api/auth/workeasy360/start` asks Django for an authorization URL. Django generates state, nonce and a PKCE verifier and returns them sealed in a signed `flow` blob. The BFF keeps the blob in an httpOnly cookie, `__Host-eb_sso` (see "Cookie names" below), valid for 10 minutes, then redirects the browser to Workeasy360.
+2. The BFF route `/api/auth/workeasy360/start` asks Django for an authorization URL. Django (the connector) generates state, nonce and a PKCE verifier and keeps them server-side as a single-use pending sign-in, valid for 10 minutes and bound to a random value; it returns that value sealed in a signed `flow` blob. The BFF keeps the blob in an httpOnly cookie, `__Host-eb_sso` (see "Cookie names" below), valid for 10 minutes, then redirects the browser to Workeasy360.
 3. The user signs in at Workeasy360, including any second factor. If they came from the launcher, Workeasy360 already knows the organization; otherwise it shows its organization chooser.
 4. Workeasy360 checks the membership, that the organization has EasyBook (trial or paid), and the seat. It then redirects to `/api/auth/callback/workeasy360?code=…&state=…`.
 5. The BFF relays the code, the state and the kept flow to Django. Django:
-   - compares the state in constant time;
+   - spends the pending sign-in that state names, first, whatever happens next. It must be bound to the value in this flow: another browser's flow, a replayed callback or one older than 10 minutes is refused (`state_mismatch` / `flow_expired`);
    - exchanges the code, authenticating with a client assertion signed by EasyBook's private key;
    - verifies the ID token offline;
-   - provisions the user, organization and membership;
-   - returns the usual access/refresh pair. The BFF stores it exactly as a password sign-in does.
+   - provisions the user, organization and membership (one transaction: a refusal leaves no new account behind);
+   - records the sign-in for back-channel logout and returns the usual access/refresh pair, which names that record. The BFF stores it exactly as a password sign-in does.
 
 **Provisioning rules** (`backend/sso/provisioning.py`):
 
@@ -45,7 +47,8 @@ manage.py link_workeasy360_organization <easybook-organization-id> <workeasy360-
    openssl pkey -in easybook-w360.key -pubout -out easybook-w360.pub
    ```
 2. In the Workeasy360 Super Admin → Products → EasyBook integration:
-   - Set the redirect URI to exactly `https://book.workeasy360.com/api/auth/callback/workeasy360`. Matching is by exact string, so a trailing slash breaks it.
+   - Set the redirect URI to exactly `https://book.workeasy360.com/api/auth/callback/workeasy360`. Matching is by exact string, so a trailing slash breaks it. (`manage.py check` refuses any other path: `sso.E002`.)
+   - Set the back-channel logout URI to `https://book.workeasy360.com/api/v1/auth/workeasy360/backchannel-logout/`, once this release is live (see "Rolling out the connector release"). `python manage.py w360sso_manifest --login-url https://book.workeasy360.com/login` prints both URIs from the running configuration.
    - Set the scopes to `openid email profile organization`.
    - Set client authentication to `private_key_jwt`.
    - Add a public-key credential from `easybook-w360.pub`. Workeasy360 returns its credential id.
@@ -54,7 +57,7 @@ manage.py link_workeasy360_organization <easybook-organization-id> <workeasy360-
 
 | Variable | Value |
 |---|---|
-| `WORKEASY360_ISSUER` | The Workeasy360 issuer, exactly as its discovery document names it (no trailing slash) |
+| `WORKEASY360_ISSUER` | The Workeasy360 issuer, exactly as its discovery document names it (no trailing slash). Production: `https://accounts.workeasy360.com` (WorkEasy360 Accounts). Changing it needs `manage.py move_workeasy360_issuer` in the same release (see "Moving to WorkEasy360 Accounts") |
 | `WORKEASY360_CLIENT_ID` | The integration's client id |
 | `WORKEASY360_REDIRECT_URI` | The registered redirect URI |
 | `WORKEASY360_KEY_ID` | The credential id from step 2 |
@@ -64,19 +67,21 @@ manage.py link_workeasy360_organization <easybook-organization-id> <workeasy360-
 | `THROTTLE_SSO_START` | Optional, default `60/min` per client address: the rate limit of the sign-in **start** endpoint (its own scope, `sso_start`). The callback and password sign-in keep `THROTTLE_AUTH` (`20/min`) |
 | `WORKEASY360_DEFAULT_ROLE` | Optional. Role for people joining an existing organization (default `staff`) |
 | `WORKEASY360_DEFAULT_CURRENCY` | Optional. Currency of a newly provisioned organization (default `INR`) |
+| `WORKEASY360_BACKCHANNEL_LOGOUT` | Optional, default on: serves the back-channel logout receiver. Off: it answers `404` |
+| `WORKEASY360_ALLOW_INSECURE_HTTP` | Local development only (on in `dev.py`): an `http://` issuer and redirect URI on a loopback host. Production refuses to start with it |
 
 To rotate the key, add a second credential in Workeasy360, deploy the new key and `WORKEASY360_KEY_ID`, confirm sign-in works, then revoke the old credential.
 
 ## Local development
 
-`dev.py` leaves `WORKEASY360_SSO_ONLY` off, so password sign-in keeps working with no Workeasy360 running. To rehearse the real flow, register a development integration whose redirect URI is `http://localhost:3000/api/auth/callback/workeasy360` (Workeasy360 accepts `http://localhost` outside production), fill in the `WORKEASY360_*` values in `backend/.env`, and set `WORKEASY360_SSO_ONLY=1`.
+`dev.py` leaves `WORKEASY360_SSO_ONLY` off, so password sign-in keeps working with no Workeasy360 running. To rehearse the real flow, register a development integration whose redirect URI is `http://localhost:3000/api/auth/callback/workeasy360` (Workeasy360 accepts `http://localhost` outside production), fill in the `WORKEASY360_*` values in `backend/.env`, and set `WORKEASY360_SSO_ONLY=1`. `dev.py` turns `WORKEASY360_ALLOW_INSECURE_HTTP` on, which the connector needs for an `http://localhost` issuer or redirect URI.
 
 ## After sign-in: the organization's access is re-checked (`sso/entitlement.py`)
 
 Workeasy360 checks the trial or plan at sign-in. EasyBook's own session then lives on (its refresh token rotates), so EasyBook also asks Workeasy360's entitlement API, as the integration guide requires, whether each organization linked to Workeasy360 may still use EasyBook:
 
-- One answer per question, shared through the cache, for Workeasy360's `revalidate_after` (900 s). A denial is asked again after 60 s, so a renewal takes effect quickly. The call authenticates with EasyBook's own `private_key_jwt` credential; there is no product parameter.
-- **Per person for a signed-in request.** When the user has an `ExternalIdentity` for the configured issuer, the question is (Workeasy360 organization, the `sub` they signed in with): the form carries `subject`, and Workeasy360 can also answer `deny` with `membership_inactive` (account disabled or locked by an administrator, membership suspended or removed) or `no_seat` (a per-seat product whose seat was unassigned). The cache key (the subject is hashed into it), the per-process copy, the single flight, the back-off and the 60 s denial re-check are all per (organization, person), so one person's denial never touches a colleague. A user with no Workeasy360 identity (a password account in local development) is asked per organization, as before. The subject lookup is cached for 5 minutes, so a request costs no extra query; only a found subject is cached ("no identity" is looked up each time, so it can never hide an identity created a moment later), and the entry is also dropped after commit when a sign-in links a new identity.
+- One answer per question, shared through the cache, for Workeasy360's `revalidate_after` (900 s). A denial is asked again after 60 s, so a renewal takes effect quickly. The call authenticates with EasyBook's own `private_key_jwt` credential; there is no product parameter. The question, its cache and these rules are the connector's (`workeasy360_sso.entitlements`); `sso/entitlement.py` decides what is asked and what the answer does here.
+- **Per person for a signed-in request.** When the user has an `ExternalIdentity` for the configured issuer, the question is (Workeasy360 organization, the `sub` they signed in with): the form carries `subject`, and Workeasy360 can also answer `deny` with `membership_inactive` (account disabled or locked by an administrator, membership suspended or removed) or `no_seat` (a per-seat product whose seat was unassigned). The cache key (the connector's, per organization and subject), the per-process copy, the single flight, the back-off and the 60 s denial re-check are all per (organization, person), so one person's denial never touches a colleague. A user with no Workeasy360 identity (a password account in local development) is asked per organization, as before. The subject lookup is cached for 5 minutes, so a request costs no extra query; only a found subject is cached ("no identity" is looked up each time, so it can never hide an identity created a moment later), and the entry is also dropped after commit when a sign-in links a new identity.
 - **Per organization for background work** (no person): see "Background jobs" below.
 - Every organization-scoped request (`core.access` gate, registered by `SsoConfig.ready` so `core` never imports `sso`) is refused with `403 workeasy360_access_ended` once the answer is `deny` - a trial that ran out, a lapsed or cancelled subscription - and every write with `workeasy360_read_only` while `write_allowed` is false. `auth/me/` and the organization list still answer, so the frontend sends every page to **/access-ended** ("EasyBook access has ended": Try again, Sign out). When the reason is the person's (`membership_inactive`, `no_seat`) the error's `details` carries `{"reason": ...}` and the page says "Your access has been removed" or "You no longer have an EasyBook seat" instead of blaming the organization (`/access-ended?reason=membership_inactive|no_seat`; an unknown reason falls back to the organization wording). A person who belongs to other organizations also gets a **Switch organization** list there (the organization list is not organization-scoped, so it still answers), which uses the same `/api/auth/organization` route as the app's switcher and lands on the dashboard with a full page load.
 - A Workeasy360 outage (5xx, 429, timeout, an unreadable key) is never a denial: the last answer stands, with none access continues, and after a failure the next attempt waits 60 s. One request asks while the others use the last answer; a first check is never waved through because another request is asking.
@@ -113,6 +118,7 @@ A job that produces a customer business effect asks, **before** the effect, whet
 | `ai.rag.tasks.index_document_task` (embeds with the AI provider) | on document change, or `manage.py ai_reindex_documents` | **A** | Returns `"skipped"`, not retried, and marks the document's index `pending` with reason `workeasy360_access` (only when it has no index yet or is already pending; an indexed document keeps serving its complete chunks). |
 | `ai.rag.tasks.resume_skipped_indexing_task` | 900 s | **A** (producer) | Enqueues indexing for documents marked `workeasy360_access`, for organizations that are allowed again. Nothing is asked for an organization with nothing marked. This is what resumes skipped indexing without an operator. |
 | `ai.rag.tasks.purge_expired_ai_data` | 86400 s | **C** retention | Never checked: retention must run for every organization. |
+| `sso.tasks.purge_workeasy360_records_task` | 21600 s | **C** housekeeping | Never checked: the connector's spent sign-in flows, logout-token ids and long-ended session records; no organization. |
 
 Not jobs: EasyBook sends no e-mail or reminders and has no external-sync task (bank statement import is a user's request, behind the request gate). `manage.py ai_reindex_documents` only enqueues the gated task; `link_workeasy360_organization` and `db_preflight` are operator commands (class C). Everything that reaches a customer through an automation (notification, outbound webhook) runs inside `run_execution_task`, so one gate covers all trigger paths.
 
@@ -155,7 +161,7 @@ So with `SESSION_COOKIE_SECURE=1` (which production requires) **every authentica
 | Access token | `__Host-eb_at` | `eb_at` |
 | Refresh token | `__Host-eb_rt` | `eb_rt` |
 | Organization choice | `__Host-eb_org` | `eb_org` |
-| Sign-in flow (state, nonce, PKCE verifier; signed; 10 min) | `__Host-eb_sso` | `eb_sso` |
+| Sign-in flow (the binding to the server-side state, nonce and PKCE verifier; signed; 10 min) | `__Host-eb_sso` | `eb_sso` |
 | Signed-out marker | `__Host-eb_signed_out` | `eb_signed_out` |
 | Loop guard | `__Host-eb_sso_auto` | `eb_sso_auto` |
 
@@ -169,15 +175,107 @@ Because a direct visit starts a sign-in by itself, starts are routine (an office
 
 ## ID token checks beyond the seven steps
 
-`azp` and a list-valued `aud` (OpenID Connect Core 3.1.3.7): an `azp` that is present must equal this client's id, and an `aud` that names anybody besides this client is accepted only with an `azp` that names this client. The product binding (`product_code`) is never skipped: an empty `WORKEASY360_PRODUCT_CODE` stops the process (see the table above). Tests: `backend/sso/tests/test_oidc.py` (`AuthorizedPartyTests`, `ProofOfPossessionTests`: a wrong PKCE verifier is refused by the fake provider's token endpoint, which verifies S256 like the real one; a known `kid` with a forged RS256 signature, and a genuine token with a swapped payload, are refused).
+`azp` and a list-valued `aud` (OpenID Connect Core 3.1.3.7): an `azp` that is present must equal this client's id, and an `aud` that names anybody besides this client is accepted only with an `azp` that names this client. The product binding (`product_code`) is never skipped: an empty `WORKEASY360_PRODUCT_CODE` stops the process (see the table above), and the connector refuses every sign-in meanwhile (`workeasy360_unavailable`). These checks are the connector's (`workeasy360_sso.tokens`); EasyBook proves them through its own API. Tests: `backend/sso/tests/test_protocol.py` (`AuthorizedPartyTests`, `ProofOfPossessionTests`: a code bound to another PKCE challenge is refused by the fake provider's token endpoint, which verifies S256 like the real one; a known `kid` with a forged RS256 signature, and a genuine token with a swapped payload, are refused).
 
 ## Redirects from the SSO routes are relative
 
 `/api/auth/workeasy360/start`, `/api/auth/callback/workeasy360` and `/api/auth/workeasy360/logout` redirect to EasyBook's own pages with a relative `Location` (`src/lib/redirect.ts`). Every target, `next` after sign-in included, goes through one check (`sameSitePath`): no whitespace, control character or backslash anywhere - a browser strips a tab, so `/<tab>/evil.example` would become `//evil.example` - and it must resolve on the same site. In a route handler Next.js builds `request.url` from the address the server listens on, not the one the browser used. Behind the production proxy (`HOSTNAME=0.0.0.0`) `new URL(path, request.url)` sent every sign-in to `http://localhost:3000`.
 
+## The workeasy360-sso connector and back-channel logout (2026-11-17)
+
+The OpenID Connect protocol is the shared **workeasy360-sso** connector, not EasyBook code: the wheel `backend/vendor/workeasy360_sso-0.3.1-py3-none-any.whl` (pinned in `requirements.txt`, and by SHA-256 in `vendor/SHA256SUMS`, which the Dockerfile and CI check), `INSTALLED_APPS` entry `workeasy360_sso`. It owns discovery and the key set, the authorization request (state, nonce, PKCE S256, `organization`), the single-use pending sign-in, `private_key_jwt`, ID-token and logout-token verification, the entitlement API with its cache and rules, and the back-channel logout receiver. It reads its configuration from the `WORKEASY360_*` settings above (`sso/connector_settings.py`); no environment variable changed its name.
+
+EasyBook keeps, unchanged:
+
+- its routes (`auth/methods/`, `auth/workeasy360/start/`, `auth/workeasy360/callback/`, `auth/workeasy360/end-session/`, called by the BFF). The BFF, the registered redirect URI and the post-logout URI are untouched;
+- the error codes the BFF maps: `sso/errors.py` translates every connector refusal back (`state_mismatch`, `flow_expired`, `workeasy360_unavailable`, `email_unverified`, `account_conflict`, `membership_inactive`, `account_disabled`, ...);
+- who is provisioned and linked, and how (`sso/provisioning.py`, now the connector's user and organization adapters, in one transaction), linking by verified address exactly as before;
+- entitlement enforcement: the 403 codes, read-only, `workeasy360_sign_in_required`, background gating and their log lines (`sso/entitlement.py`, now a thin wrapper over `workeasy360_sso.entitlements`).
+
+**What Workeasy360 sees.** The same client id, credential, scopes, redirect URI and post-logout URI, and the same authorization, token and entitlement requests. The one addition is a field the entitlement API defines: every entitlement question now also says `write=false` (EasyBook never asks the "fresh, for a write" variant). Once the back-channel logout URI is registered, ID tokens carry `sid` (the platform's choice, ADR-069).
+
+**How the BFF fits.** The connector binds a pending sign-in to a browser with a cookie. EasyBook's browser never talks to Django, so the BFF is the connector's browser: the binding value travels in the signed `flow` blob the BFF already keeps (it no longer carries state, nonce or verifier, which stay server-side), and the callback hands it back to the connector. A sign-in records no Django session: EasyBook's session is still the access/refresh pair. The connector records the sign-in against a session that is never stored (`sso/flow.py`, `UnstoredSession`). The callback answers a refusal without rolling the request back, so a refused pending sign-in stays spent.
+
+**Data.**
+
+- `sso.ExternalIdentity` stays the authoritative (issuer, `sub`) → user link, written exactly as before.
+- The connector's `FederatedIdentity` (`workeasy360_sso_federated_identity`) mirrors it. Migration `sso.0002_federated_identity_backfill` copied every existing link into it, **adding rows only**: nothing existing is changed, moved or deleted, and a mirror row already there is left alone. Every sign-in keeps the mirror in step.
+- `workeasy360_sso_product_session`: one row per Workeasy360 sign-in, with its `sid`. The token pair the sign-in issues carries the row's id (claim `workeasy360_session`), and every refresh keeps it.
+- In-flight sign-ins, spent logout-token ids and ended Workeasy360 sign-ins. `sso.tasks.purge_workeasy360_records_task` (beat, every 6 h) purges what is no longer needed. It is not the connector's `w360sso_cleanup`, which would delete every session record here (no EasyBook session is a Django session): an open record goes only once its person holds no live refresh token, and an ended one is kept longer than a refresh token lives.
+
+### Back-channel logout
+
+Workeasy360 POSTs a signed logout token to `/api/v1/auth/workeasy360/backchannel-logout/`: under `/api/v1/`, the only prefix the production edge routes to Django (`infrastructure/terraform/alb.tf`), and on the redirect URI's origin, as Workeasy360 requires. The connector verifies it (signature from the key set, `iss`, `aud`, `iat`/`exp`, the back-channel event, no `nonce`, `typ: logout+jwt`) and accepts each `jti` once. A forged, expired or replayed token is answered `400` and ends nothing.
+
+| Token names | Ends |
+|---|---|
+| `sid` (one Workeasy360 sign-in ended: a sign-out on that device, an account switch, a revoked session) | the EasyBook sessions that sign-in opened, nothing else. The same person's other devices stay signed in |
+| only `sub` ("sign out everywhere", a password change or reset) | every EasyBook session of that person: every session record, and every refresh token they hold |
+
+"Ends" means at once. From then on every access token of that session is refused (`401`) and its refresh token is refused too (`sso/sessions.py`), including tokens rotated since the sign-in. The BFF then signs the browser out as for any expired session.
+
+- Sessions opened before this release (or by a password) carry no session record. Only "sign out everywhere" reaches them: their refresh tokens are revoked, so they end at their next refresh, within one access-token lifetime (`JWT_ACCESS_MINUTES`, 15 minutes).
+- A sign-in that was still at Workeasy360 when its Workeasy360 sign-in ended is refused (`flow_expired`, "start again").
+- If ending the sessions fails, nothing is recorded (the `jti` included), Workeasy360 is answered `503` and delivers again.
+- Each ended session is audited (`sign_in`, `delete`, method `workeasy360_backchannel`) in the organization it was signed in to.
+
+Tests: `backend/sso/tests/test_backchannel.py`.
+
+### Rolling out the connector release, and rolling it back
+
+The platform side (back-channel logout, ADR-069) and EasyBook can be deployed in either order. Until both are live and the URI is registered, nothing is sent to the receiver.
+
+**Before deploying**
+
+1. With the production environment, run `python manage.py check --deploy` and `python manage.py w360sso_check`. The connector refuses some configuration the old client accepted. In SSO-only production it refuses to start on any `workeasy360_sso.E001` error: an RSA key under 2048 bits, a key file it cannot read, a query string in `WORKEASY360_POST_LOGOUT_REDIRECT_URI`, a trailing `/` on `WORKEASY360_ISSUER`. Fix those first.
+2. Take a database snapshot, as for every release (`infrastructure/runbooks/deploy.md`).
+
+**Deploy**
+
+1. `migrate`: `workeasy360_sso.0001`-`0003` create the connector's tables, and `sso.0002` back-fills the identity mirror. It only adds rows; nothing existing changes.
+2. Deploy `api`, the workers and `beat` (the housekeeping task is new). Everyone stays signed in: existing token pairs keep working and refresh as before, and nobody's link changes. A sign-in that is mid-flight at the moment of the deploy ends once in `sso_error=expired` (its flow is the old release's). Cached entitlement answers start afresh (the connector keeps its own cache keys): each person's first request after the deploy asks Workeasy360 again.
+3. Check: one Workeasy360 sign-in works; `python manage.py w360sso_manifest --login-url https://book.workeasy360.com/login` prints the URIs to register.
+
+**Turn on back-channel logout** (only after EasyBook and the platform's ADR-069 release are both live)
+
+1. In Super Admin, Products → EasyBook → Authentication, set the back-channel logout URL to `https://book.workeasy360.com/api/v1/auth/workeasy360/backchannel-logout/` (the redirect URI's origin).
+2. Sign in to EasyBook, then sign out of Workeasy360 on that device. EasyBook's next request is refused and the browser lands on the sign-in page; Super Admin shows the delivery as delivered.
+
+**Roll back**
+
+1. First clear the back-channel logout URL in Super Admin: the previous image answers `404` to its POSTs, which the platform records as failed deliveries.
+2. Redeploy the previous image. There is no migration to reverse. The connector's tables stay, and the previous code ignores them. `ExternalIdentity` was authoritative and written exactly as before, so every link is intact. Token pairs issued by this release are ordinary SimpleJWT tokens to the previous code (it ignores the extra claim), so nobody is signed out. A sign-in in flight ends once in `expired`.
+3. To redeploy this release later, migrate again (a no-op); the mirror catches up at each sign-in.
+4. Never drop the connector's tables while either image may still run.
+
+## Moving to WorkEasy360 Accounts (`accounts.workeasy360.com`)
+
+WorkEasy360's central sign-in is moving from `https://auth.workeasy360.com` to `https://accounts.workeasy360.com` (platform ADR-067). It is the same provider, with the same keys, the same people (`sub`), and the same client id, credential, redirect URI and post-logout URI; only the issuer name changes. The platform answers on both names while products move, and each name issues tokens only under its own `iss`. EasyBook keeps verifying exactly one issuer, the configured one.
+
+**Which value.** `https://accounts.workeasy360.com`, once the platform is at stage b of its move. Before that, discovery under that name is refused, and every sign-in would end in `unavailable`.
+
+**Data, in the same release.** EasyBook links people on (issuer, `sub`) twice: `ExternalIdentity` and the connector's mirror. Move both before the new configuration takes traffic:
+
+```
+python manage.py move_workeasy360_issuer --from https://auth.workeasy360.com           # dry run: both tables
+python manage.py move_workeasy360_issuer --from https://auth.workeasy360.com --apply   # one transaction
+```
+
+- It moves the links to the configured issuer only, with their session records and ended Workeasy360 sign-ins, and logs `sso.issuer_moved`.
+- It folds a duplicate link (the same person on the same EasyBook user under both names).
+- If one person has two EasyBook users, or one EasyBook user holds two people, in either table, it moves nothing and lists them for a human decision.
+- Running it again moves nothing.
+- Without it a returning person is not recognised: they get a second, empty account, or `account_conflict`.
+
+**Rollout.** Read the production `WORKEASY360_ISSUER`. Set it to `https://accounts.workeasy360.com`. Deploy, running `migrate` and then `move_workeasy360_issuer --from <the old value> --apply` before the release takes traffic. Check with `w360sso_check`, then one sign-in and one sign-out.
+
+**Rollback** (while the platform still serves the previous name): put the previous value back, then run `move_workeasy360_issuer --from https://accounts.workeasy360.com --apply`.
+
+Back-channel logout keeps working through the move: the platform signs each logout token with the issuer EasyBook last redeemed a code under (ADR-069 addendum). Tests: `backend/sso/tests/test_issuer_move.py`.
+
 ## What this does not do yet
 
-- **Single sign-out.** Signing out of EasyBook ends the EasyBook session only. While the Workeasy360 session is still alive, the next **Continue with Workeasy360** signs straight back in (typing EasyBook's address does not: the sign-out marker shows the sign-in page first).
+- **Single sign-out, one way only.** Signing out of EasyBook ends the EasyBook session only. While the Workeasy360 session is still alive, the next **Continue with Workeasy360** signs straight back in (typing EasyBook's address does not: the sign-out marker shows the sign-in page first). The other way round is covered: signing out of Workeasy360 ends EasyBook's sessions of that sign-in (back-channel logout, below).
 - **Member management.** EasyBook still has no invite or role-change screens. People arrive through Workeasy360, and roles beyond the default need a backend change or the Django admin.
 
 ## Universal sign-in: what the person controls (2026-10-12)
