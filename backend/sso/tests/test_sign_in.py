@@ -1,32 +1,40 @@
 """End to end through the API the BFF calls: start, then callback, against a
-fake Workeasy360 that signs real tokens."""
+fake Workeasy360 that signs real tokens, with the workeasy360-sso connector
+doing the protocol."""
 
 import io
 from unittest import mock
 
 from django.conf import settings
+from django.contrib.sessions.models import Session
+from django.core import signing
 from django.core.cache import cache
 from django.core.management import call_command
 from django.core.management.base import SystemCheckError
 from django.test import SimpleTestCase, override_settings
 from rest_framework.test import APITestCase
 from rest_framework.throttling import SimpleRateThrottle
+from rest_framework_simplejwt.token_blacklist.models import OutstandingToken
 from rest_framework_simplejwt.tokens import AccessToken, RefreshToken
+from workeasy360_sso import discovery
+from workeasy360_sso.models import FederatedIdentity, PendingSignIn, ProductSession
 
 from accounts.models import Membership, Organization, User
 from audit.models import AuditLog
 from authz.roles import Role
 from core.tenancy import tenant_context
 from core.tests.factories import make_org_with_owner, make_user
-from sso import checks, config, entitlement
+from sso import checks, entitlement
+from sso.flow import FLOW_MAX_AGE_SECONDS
 from sso.models import ExternalIdentity
-from sso.oidc import Workeasy360Client
+from sso.sessions import SESSION_CLAIM
 from sso.tests.fakes import (
     CLIENT_ID,
     CLIENT_PRIVATE_PEM,
     ISSUER,
     KEY_ID,
     REDIRECT_URI,
+    Clock,
     FakeWorkeasy360,
     authorize_params,
 )
@@ -46,43 +54,50 @@ CONFIGURED = {
 }
 
 
+def behind_fake_provider(case):
+    """Point the connector at a fresh ``FakeWorkeasy360`` for one test, with its entitlement clock in the
+    test's hands and nothing cached from another test. Returns (provider, clock)."""
+    provider = FakeWorkeasy360()
+    transport = override_settings(WORKEASY360_HTTP_TRANSPORT=provider.httpx_transport)
+    transport.enable()
+    case.addCleanup(transport.disable)
+    clock = Clock()
+    patcher = mock.patch("workeasy360_sso.entitlements._clock", clock)
+    patcher.start()
+    case.addCleanup(patcher.stop)
+    # Every call here is throttle_scope "auth" (20/min); the bucket lives in the shared locmem cache and must
+    # not leak into other suites. The entitlement re-check also keeps a per-process copy of its answers, and
+    # the connector caches discovery and the key set per process.
+    for reset in (cache.clear, entitlement.clear_local, discovery.reset_cache):
+        reset()
+        case.addCleanup(reset)
+    return provider, clock
+
+
 @override_settings(**CONFIGURED)
 class SignInTestCase(APITestCase):
     def setUp(self):
-        self.provider = FakeWorkeasy360()
-        client = Workeasy360Client(
-            issuer=ISSUER, client_id=CLIENT_ID, redirect_uri=REDIRECT_URI, private_key_pem=CLIENT_PRIVATE_PEM,
-            key_id=KEY_ID, transport=self.provider.transport,
-        )
-        for target in ("sso.flow.get_client", "sso.entitlement.get_client"):
-            patcher = mock.patch(target, return_value=client)
-            patcher.start()
-            self.addCleanup(patcher.stop)
-        config.get_client.cache_clear()
-        # Every call here is throttle_scope "auth" (20/min); the bucket lives
-        # in the shared locmem cache and must not leak into other suites. The
-        # entitlement re-check also keeps a per-process copy of its answers.
-        cache.clear()
-        entitlement.clear_local()
-        self.addCleanup(cache.clear)
-        self.addCleanup(entitlement.clear_local)
+        self.provider, self.clock = behind_fake_provider(self)
 
     def start(self, organization=""):
         response = self.client.post("/api/v1/auth/workeasy360/start/", {"organization": organization})
         self.assertEqual(response.status_code, 200, response.content)
         return response.data
 
-    def sign_in(self, *, organization=W360_ORG, **claims):
-        started = self.start(organization)
+    def complete(self, started, *, code=None, state=None, **claims):
         params = authorize_params(started["authorization_url"])
-        code = self.provider.issue_code(
-            nonce=params["nonce"], code_challenge=params["code_challenge"],
-            claims=self.provider.claims(organization_id=organization, **claims),
-        )
+        if code is None:
+            code = self.provider.issue_code(
+                nonce=params["nonce"], code_challenge=params["code_challenge"],
+                claims=self.provider.claims(**claims),
+            )
         return self.client.post(
             "/api/v1/auth/workeasy360/callback/",
-            {"code": code, "state": params["state"], "flow": started["flow"]},
+            {"code": code, "state": params["state"] if state is None else state, "flow": started["flow"]},
         )
+
+    def sign_in(self, *, organization=W360_ORG, **claims):
+        return self.complete(self.start(organization), organization_id=organization, **claims)
 
     def membership(self, user, organization):
         with tenant_context(user_id=user.id):
@@ -112,6 +127,25 @@ class MethodsAndStartTests(SignInTestCase):
         self.assertEqual(response.status_code, 503)
         self.assertEqual(response.data["error"]["code"], "workeasy360_unavailable")
 
+    def test_start_with_an_unreachable_provider_is_unavailable(self):
+        self.provider.discovery_issuer = "https://evil.example"  # a document describing someone else
+        response = self.client.post("/api/v1/auth/workeasy360/start/", {})
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(response.data["error"]["code"], "workeasy360_unavailable")
+        self.assertFalse(PendingSignIn.objects.exists())
+
+    def test_the_flow_the_bff_keeps_names_no_state_nonce_or_verifier(self):
+        started = self.start(W360_ORG)
+        params = authorize_params(started["authorization_url"])
+        kept = signing.loads(started["flow"], salt="sso.workeasy360.flow", max_age=FLOW_MAX_AGE_SECONDS)
+        self.assertEqual(set(kept), {"b"})  # only this browser's binding: the rest stays server-side
+        for secret in (params["state"], params["nonce"]):
+            self.assertNotIn(secret, str(kept))
+        pending = PendingSignIn.objects.get()
+        self.assertNotEqual(pending.state_hash, params["state"])  # hashed at rest
+        self.assertEqual(str(pending.organization_hint), W360_ORG)
+        self.assertEqual((pending.expires_at - pending.created_at).total_seconds(), FLOW_MAX_AGE_SECONDS)
+
 
 class FirstSignInTests(SignInTestCase):
     def test_first_sign_in_provisions_user_organization_and_owner(self):
@@ -120,6 +154,7 @@ class FirstSignInTests(SignInTestCase):
 
         user = User.objects.get(email="asha@example.com")
         self.assertFalse(user.has_usable_password())
+        self.assertIsNotNone(user.last_login)
         self.assertEqual((user.first_name, user.last_name), ("Asha", "Rao"))
         organization = Organization.objects.get(workeasy360_organization_id=W360_ORG)
         self.assertEqual(organization.name, "Acme Traders")
@@ -170,6 +205,53 @@ class FirstSignInTests(SignInTestCase):
         self.assertEqual(Organization.objects.get(workeasy360_organization_id=W360_ORG).name, "My organization")
 
 
+class SessionRecordTests(SignInTestCase):
+    """What the connector records about a sign-in, so back-channel logout can end it (sso/sessions.py)."""
+
+    def test_the_sign_in_is_recorded_and_its_tokens_name_the_record(self):
+        response = self.sign_in(sid="w360-sign-in-1")
+        self.assertEqual(response.status_code, 200, response.content)
+        record = ProductSession.objects.get()
+        self.assertEqual(record.provider_sid, "w360-sign-in-1")
+        self.assertEqual(str(record.organization_id), W360_ORG)  # the Workeasy360 organization, not ours
+        self.assertEqual((record.identity.issuer, record.identity.subject), (ISSUER, "w360-user-1"))
+        self.assertIsNone(record.ended_at)
+        self.assertEqual(AccessToken(response.data["access"])[SESSION_CLAIM], str(record.id))
+        refresh = RefreshToken(response.data["refresh"])
+        self.assertEqual(refresh[SESSION_CLAIM], str(record.id))
+        # The outstanding-token record holds exactly what the BFF holds.
+        self.assertEqual(OutstandingToken.objects.get(jti=refresh["jti"]).token, response.data["refresh"])
+
+    def test_a_refresh_keeps_the_session(self):
+        response = self.sign_in()
+        refreshed = self.client.post("/api/v1/auth/refresh/", {"refresh": response.data["refresh"]})
+        self.assertEqual(refreshed.status_code, 200, refreshed.content)
+        record = ProductSession.objects.get()
+        self.assertEqual(RefreshToken(refreshed.data["refresh"])[SESSION_CLAIM], str(record.id))
+        self.assertEqual(AccessToken(refreshed.data["access"])[SESSION_CLAIM], str(record.id))
+
+    def test_without_a_sid_the_sign_in_is_still_recorded(self):
+        # Workeasy360 issues sid only to an integration that registered a back-channel logout URI.
+        self.assertEqual(self.sign_in().status_code, 200)
+        self.assertEqual(ProductSession.objects.get().provider_sid, "")
+
+    def test_no_django_session_is_ever_stored(self):
+        self.assertEqual(self.sign_in().status_code, 200)
+        self.assertEqual(Session.objects.count(), 0)
+
+    def test_the_identity_mirror_follows_the_authoritative_link(self):
+        self.sign_in()
+        user = User.objects.get(email="asha@example.com")
+        mirror = FederatedIdentity.objects.get()
+        self.assertEqual((mirror.user_id, mirror.issuer, mirror.subject), (user.id, ISSUER, "w360-user-1"))
+        # A mirror that disagrees (written by an earlier release, say) is corrected by the next sign-in.
+        other = make_user(email="someone@example.com")
+        FederatedIdentity.objects.filter(pk=mirror.pk).update(user=other)
+        self.assertEqual(self.sign_in().status_code, 200)
+        self.assertEqual(FederatedIdentity.objects.get().user_id, user.id)
+        self.assertEqual(ExternalIdentity.objects.get().user_id, user.id)
+
+
 class LinkingTests(SignInTestCase):
     def test_existing_account_is_linked_by_a_verified_address_and_its_password_retired(self):
         _, owner, _ = make_org_with_owner(email="asha@example.com")
@@ -178,6 +260,7 @@ class LinkingTests(SignInTestCase):
         self.assertEqual(response.status_code, 200, response.content)
         self.assertEqual(AccessToken(response.data["access"])["user_id"], str(owner.id))
         self.assertTrue(ExternalIdentity.objects.filter(user=owner).exists())
+        self.assertTrue(FederatedIdentity.objects.filter(user=owner).exists())
         owner.refresh_from_db()
         # EasyBook never verified the address, so the password may belong to
         # someone who pre-registered it: it goes, with every session it opened.
@@ -188,6 +271,9 @@ class LinkingTests(SignInTestCase):
         self.assertEqual(
             self.client.post("/api/v1/auth/refresh/", {"refresh": response.data["refresh"]}).status_code, 200
         )
+        organization = Organization.objects.get(workeasy360_organization_id=W360_ORG)
+        with tenant_context(organization_id=organization.id):
+            self.assertTrue(AuditLog.objects.filter(object_type="external_identity", object_id=str(owner.id)).exists())
 
     def test_an_unverified_address_never_takes_over_an_account(self):
         owner = make_user(email="asha@example.com")
@@ -202,6 +288,7 @@ class LinkingTests(SignInTestCase):
         response = self.sign_in(sub="w360-impostor")  # same verified address, different subject
         self.assertEqual(response.status_code, 403)
         self.assertEqual(response.data["error"]["code"], "account_conflict")
+        self.assertFalse(FederatedIdentity.objects.filter(subject="w360-impostor").exists())
 
     def test_an_unverified_address_never_creates_an_account(self):
         response = self.sign_in(email_verified=False)
@@ -225,6 +312,18 @@ class LinkingTests(SignInTestCase):
         self.assertEqual(response.status_code, 403)
         self.assertEqual(response.data["error"]["code"], "membership_inactive")
 
+    def test_a_refused_membership_leaves_no_new_account_behind(self):
+        # The user and organization adapters share one transaction: a refusal in the second undoes the first.
+        organization, _owner, _ = make_org_with_owner(org_name="Legacy Books", email="owner@example.com")
+        Organization.objects.filter(id=organization.id).update(workeasy360_organization_id=W360_ORG, is_active=False)
+        response = self.sign_in()
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(response.data["error"]["code"], "organization_inactive")
+        self.assertFalse(User.objects.filter(email="asha@example.com").exists())
+        self.assertFalse(ExternalIdentity.objects.exists())
+        self.assertFalse(FederatedIdentity.objects.exists())
+        self.assertFalse(ProductSession.objects.exists())
+
     def test_a_deactivated_account_cannot_sign_in(self):
         self.sign_in()
         User.objects.filter(email="asha@example.com").update(is_active=False)
@@ -244,13 +343,10 @@ class LinkingTests(SignInTestCase):
 class CallbackHardeningTests(SignInTestCase):
     def test_state_mismatch_is_refused(self):
         started = self.start(W360_ORG)
-        params = authorize_params(started["authorization_url"])
-        code = self.provider.issue_code(nonce=params["nonce"], code_challenge=params["code_challenge"])
-        response = self.client.post(
-            "/api/v1/auth/workeasy360/callback/", {"code": code, "state": "forged", "flow": started["flow"]}
-        )
+        response = self.complete(started, state="forged")
         self.assertEqual(response.status_code, 403)
         self.assertEqual(response.data["error"]["code"], "state_mismatch")
+        self.assertFalse(any(url.endswith("/oauth/token") for _, url in self.provider.calls))
 
     def test_a_tampered_flow_is_refused(self):
         started = self.start(W360_ORG)
@@ -272,21 +368,50 @@ class CallbackHardeningTests(SignInTestCase):
             )
         self.assertEqual(response.data["error"]["code"], "flow_expired")
 
+    def test_a_flow_from_the_previous_release_ends_in_expired(self):
+        # A sign-in mid-flight at the deploy: its flow carried state, nonce and verifier, and no binding.
+        started = self.start(W360_ORG)
+        params = authorize_params(started["authorization_url"])
+        old = signing.dumps(
+            {"s": params["state"], "n": params["nonce"], "v": "v" * 43, "o": W360_ORG},
+            salt="sso.workeasy360.flow", compress=True,
+        )
+        response = self.client.post(
+            "/api/v1/auth/workeasy360/callback/", {"code": "x", "state": params["state"], "flow": old}
+        )
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(response.data["error"]["code"], "flow_expired")
+
+    def test_a_flow_is_single_use(self):
+        started = self.start(W360_ORG)
+        self.assertEqual(self.complete(started).status_code, 200)
+        replayed = self.complete(started)  # the same state again: that flow is spent
+        self.assertEqual(replayed.status_code, 403)
+        self.assertEqual(replayed.data["error"]["code"], "state_mismatch")
+        self.assertEqual(ProductSession.objects.count(), 1)
+
+    def test_a_flow_is_bound_to_the_browser_that_started_it(self):
+        mine, theirs = self.start(W360_ORG), self.start(W360_ORG)
+        # Their state with my flow (a callback URL opened in another browser): refused, and their flow is
+        # burnt rather than left for a second attempt.
+        response = self.complete(mine, state=authorize_params(theirs["authorization_url"])["state"])
+        self.assertEqual(response.data["error"]["code"], "state_mismatch")
+        self.assertEqual(self.complete(theirs).data["error"]["code"], "state_mismatch")
+        self.assertEqual(self.complete(mine).status_code, 200)
+
     def test_a_token_for_another_product_is_refused(self):
         response = self.sign_in(product_code="easy_crm")
         self.assertEqual(response.status_code, 403)
         self.assertEqual(response.data["error"]["code"], "wrong_product")
 
+    def test_a_token_naming_no_product_is_refused(self):
+        response = self.sign_in(product_code=None)
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(response.data["error"]["code"], "wrong_product")
+
     def test_a_token_for_another_organization_than_the_launcher_asked_is_refused(self):
         started = self.start(W360_ORG)
-        params = authorize_params(started["authorization_url"])
-        code = self.provider.issue_code(
-            nonce=params["nonce"], code_challenge=params["code_challenge"],
-            claims=self.provider.claims(organization_id="0d6c0a3e-8e52-4a63-8b0e-5a1d2c3b4f50"),
-        )
-        response = self.client.post(
-            "/api/v1/auth/workeasy360/callback/", {"code": code, "state": params["state"], "flow": started["flow"]}
-        )
+        response = self.complete(started, organization_id="0d6c0a3e-8e52-4a63-8b0e-5a1d2c3b4f50")
         self.assertEqual(response.status_code, 403)
         self.assertEqual(response.data["error"]["code"], "wrong_organization")
         self.assertFalse(Organization.objects.exists())
@@ -301,6 +426,18 @@ class CallbackHardeningTests(SignInTestCase):
         response = self.sign_in()
         self.assertEqual(response.status_code, 503)
         self.assertEqual(response.data["error"]["code"], "workeasy360_unavailable")
+
+    def test_a_rate_limited_token_endpoint_is_503_not_a_refusal(self):
+        self.provider.token_status = (429, {"error": "temporarily_unavailable"})
+        response = self.sign_in()
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(response.data["error"]["code"], "workeasy360_unavailable")
+
+    def test_a_refused_code_exchange_is_sign_in_refused(self):
+        self.provider.token_status = (400, {"error": "invalid_grant"})
+        response = self.sign_in()
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(response.data["error"]["code"], "sign_in_refused")
 
 
 @override_settings(WORKEASY360_SSO_ONLY=True)
@@ -333,14 +470,7 @@ class SignOutOfWorkeasy360Tests(SignInTestCase):
     """RP-initiated logout: where "sign out of EasyBook and Workeasy360" sends the browser."""
 
     def end_session(self):
-        with mock.patch("sso.views.get_client", return_value=self._client()):
-            return self.client.get("/api/v1/auth/workeasy360/end-session/")
-
-    def _client(self):
-        return Workeasy360Client(
-            issuer=ISSUER, client_id=CLIENT_ID, redirect_uri=REDIRECT_URI, private_key_pem=CLIENT_PRIVATE_PEM,
-            key_id=KEY_ID, transport=self.provider.transport,
-        )
+        return self.client.get("/api/v1/auth/workeasy360/end-session/")
 
     @override_settings(WORKEASY360_POST_LOGOUT_REDIRECT_URI="https://book.workeasy360.test/login")
     def test_names_only_our_client_and_our_registered_uri(self):
@@ -355,10 +485,16 @@ class SignOutOfWorkeasy360Tests(SignInTestCase):
 
     def test_is_empty_without_the_setting(self):
         self.assertEqual(self.end_session().data, {"url": ""})
+        self.assertEqual(self.provider.calls, [])
 
     @override_settings(WORKEASY360_POST_LOGOUT_REDIRECT_URI="https://book.workeasy360.test/login")
     def test_is_empty_when_the_provider_offers_no_end_session(self):
         self.provider.advertise_end_session = False
+        self.assertEqual(self.end_session().data, {"url": ""})
+
+    @override_settings(WORKEASY360_POST_LOGOUT_REDIRECT_URI="https://book.workeasy360.test/login")
+    def test_is_empty_when_the_provider_cannot_be_reached(self):
+        self.provider.discovery_issuer = "https://evil.example"
         self.assertEqual(self.end_session().data, {"url": ""})
 
 
@@ -367,12 +503,18 @@ class ProductBindingTests(SignInTestCase):
         self.assertEqual(self.sign_in(product_code="easybook").status_code, 200)
 
     def test_no_configured_product_code_fails_closed_instead_of_skipping_the_check(self):
+        started = self.start(W360_ORG)  # begun while configured
         with override_settings(WORKEASY360_PRODUCT_CODE=""):
+            # Nothing starts...
+            response = self.client.post("/api/v1/auth/workeasy360/start/", {"organization": W360_ORG})
+            self.assertEqual(response.status_code, 503)
+            self.assertEqual(response.data["error"]["code"], "workeasy360_unavailable")
+            # ...and nothing in flight completes, whatever product the token names.
             for claimed in ("easybook", "easy_crm", None):
                 with self.subTest(claimed=claimed):
-                    response = self.sign_in(product_code=claimed)
-                    self.assertEqual(response.status_code, 403)
-                    self.assertEqual(response.data["error"]["code"], "wrong_product")
+                    response = self.complete(started, product_code=claimed)
+                    self.assertIn(response.status_code, (403, 503))
+                    self.assertNotIn("access", response.data)
         self.assertFalse(User.objects.filter(email="asha@example.com").exists())
         self.assertFalse(Organization.objects.exists())
 
@@ -394,6 +536,27 @@ class ProductCodeCheckTests(SimpleTestCase):
     def test_manage_py_check_stops_on_it(self):
         with override_settings(WORKEASY360_PRODUCT_CODE=""), self.assertRaises(SystemCheckError):
             call_command("check", stdout=io.StringIO(), stderr=io.StringIO())
+
+
+class RedirectUriCheckTests(SimpleTestCase):
+    """The registered redirect URI is the BFF's callback route; Django serves no route at it, so the connector's
+    own check (workeasy360_sso.E005) is silenced and this one stands in for it."""
+
+    def test_the_bff_callback_passes_and_unset_passes(self):
+        for value in ("", REDIRECT_URI, "http://localhost:3000/api/auth/callback/workeasy360"):
+            with self.subTest(value), override_settings(WORKEASY360_REDIRECT_URI=value):
+                self.assertEqual(checks.redirect_uri_is_the_bff_callback(None), [])
+
+    def test_any_other_path_is_a_system_check_error(self):
+        for value in (
+            "https://book.workeasy360.test/api/auth/callback/workeasy360/",  # a trailing slash breaks the match
+            "https://book.workeasy360.test/api/v1/auth/workeasy360/callback/",  # Django's relay endpoint
+        ):
+            with self.subTest(value), override_settings(WORKEASY360_REDIRECT_URI=value):
+                self.assertEqual([error.id for error in checks.redirect_uri_is_the_bff_callback(None)], ["sso.E002"])
+
+    def test_only_the_explained_connector_checks_are_silenced(self):
+        self.assertEqual(sorted(settings.SILENCED_SYSTEM_CHECKS), ["workeasy360_sso.E005", "workeasy360_sso.W003"])
 
 
 class ThrottleScopeTests(SignInTestCase):

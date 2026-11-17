@@ -1,20 +1,22 @@
 import logging
+import uuid
 
 from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from rest_framework.views import APIView
+from workeasy360_sso import api
+from workeasy360_sso.conf import ConfigurationError
 
 from core.exceptions import ApplicationError
 from core.throttling import FailOpenScopedRateThrottle
 from sso import flow
 from sso.config import (
-    get_client,
+    connector,
     is_configured,
     password_sign_in_allowed,
-    post_logout_redirect_uri,
     sign_out_of_workeasy360_available,
 )
-from sso.oidc import SSOError
+from sso.errors import UNAVAILABLE, SSOError
 
 logger = logging.getLogger(__name__)
 
@@ -26,7 +28,7 @@ _MAX_FLOW = 4096
 
 #: SSOError codes that mean "Workeasy360 could not be reached or answered
 #: oddly" (retry later) rather than "this sign-in is refused".
-_UNAVAILABLE = {"provider_unavailable", "provider_misconfigured"}
+_UNAVAILABLE = UNAVAILABLE
 
 
 class SignInUnavailable(ApplicationError):
@@ -66,10 +68,13 @@ class Workeasy360EndSessionView(APIView):
         if not sign_out_of_workeasy360_available():
             return Response({"url": ""})
         try:
-            url = get_client().end_session_url(post_logout_redirect_uri=post_logout_redirect_uri())
-        except SSOError as exc:
-            logger.warning("sso.end_session_failed", extra={"code": exc.code, "detail": exc.detail})
+            # "" when discovery cannot be read or advertises no end_session_endpoint.
+            url = api.end_session_url(connector())
+        except ConfigurationError as exc:
+            logger.warning("sso.end_session_failed", extra={"code": "provider_misconfigured", "detail": str(exc)})
             url = ""
+        if not url:
+            logger.warning("sso.end_session_failed", extra={"code": "provider_unavailable", "detail": "no end_session_endpoint"})
         return Response({"url": url})
 
 
@@ -124,6 +129,28 @@ class Workeasy360CallbackView(APIView):
             # The detail is for the log only; the browser gets the fixed code.
             logger.warning("sso.callback_refused", extra={"code": exc.code, "detail": exc.detail})
             if exc.code in _UNAVAILABLE:
-                raise SignInUnavailable() from None
-            raise ApplicationError("Workeasy360 sign-in could not be completed.", code=exc.code,
-                                   status_code=403) from None
+                return _refused(request, SignInUnavailable())
+            return _refused(
+                request,
+                ApplicationError("Workeasy360 sign-in could not be completed.", code=exc.code, status_code=403),
+            )
+
+
+def _refused(request, error: ApplicationError) -> Response:
+    """The error envelope ``core.exceptions.api_exception_handler`` renders, answered rather than raised.
+
+    Raising would roll the request's transaction back (DRF marks it for rollback on any APIException), and
+    with it the connector spending this sign-in's pending flow - which must stick whatever happens next, so a
+    refused flow cannot be tried again. Nothing else of a refused sign-in is left to commit: provisioning ran
+    in the connector's own transaction, which a refusal has already rolled back."""
+    return Response(
+        {
+            "error": {
+                "code": error.get_codes(),
+                "message": str(error.detail),
+                "details": None,
+                "request_id": getattr(request, "request_id", None) or str(uuid.uuid4()),
+            }
+        },
+        status=error.status_code,
+    )

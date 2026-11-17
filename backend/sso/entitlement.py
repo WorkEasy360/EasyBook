@@ -6,28 +6,29 @@ contract closes that gap (product integration guide section 6, entitlement API):
 advertised cadence and stop serving an organization whose access has ended - a trial that ran out, a
 lapsed or cancelled subscription - within that window.
 
-- One answer per Workeasy360 organization, shared by every user and process through the cache, for the
-  provider's ``revalidate_after`` (900 s). A denial is asked again sooner (``DENIAL_RECHECK_SECONDS``),
-  so a renewal takes effect quickly.
+The question, its cache and its rules are the workeasy360-sso connector's (``workeasy360_sso.entitlements``);
+this module decides *what* EasyBook asks and what it does with the answer:
+
+- One answer per question, shared by every user and process through the cache, for the provider's
+  ``revalidate_after`` (900 s at most, 30 s at least). A denial is asked again sooner
+  (``DENIAL_RECHECK_SECONDS``), so a renewal takes effect quickly.
 - A signed-in request whose user has an ``ExternalIdentity`` for the configured issuer asks per person:
   (Workeasy360 organization, the ``sub`` the person signed in with). Workeasy360 then also denies with
   ``membership_inactive`` (account disabled or locked, membership suspended or removed) or ``no_seat``
   (a per-seat product whose seat was unassigned). The cache key, the local copy, the single flight, the
-  back-off and the denial re-check are all per that key. Without an identity the question is the
+  back-off and the denial re-check are all per that question. Without an identity the question is the
   organization's alone. Background work never has a person: it asks per organization, and trusts a denial
   for ``BACKGROUND_DENIAL_SECONDS`` (``background_gate``).
-- An outage (5xx, 429, timeout, network, an unreadable key) is never a denial. The last known answer
-  stands; with none, access continues - the provider's own rule, so an outage cannot lock out paying
-  customers. After a failure the next attempt waits ``FAILURE_BACKOFF_SECONDS``.
+- An outage (5xx, 429, timeout, network, an unreadable key, anything that is not an answer) is never a
+  denial. The last known answer stands; with none, access continues - the provider's own rule, so an outage
+  cannot lock out paying customers. After a failure the next attempt, from any process, waits
+  ``FAILURE_BACKOFF_SECONDS``.
 - A refusal is not an outage: when Workeasy360 answers but refuses EasyBook's own client (400/401/403 -
   a revoked or wrong credential, a suspended integration), access is refused too
-  (``workeasy360_access_unverified``). A refusal is about the *client*, not one organization or person, so
-  it closes the whole client for ``DENIAL_RECHECK_SECONDS``: every question - a person's, an
-  organization's, background work's - fails closed without being asked; then one is asked again. Workeasy360
-  answers 429 once a client has failed to authenticate ~10 times a minute; a 429 that arrives soon after a
-  refusal (``RATE_LIMIT_AFTER_REFUSAL_SECONDS``) is that limiter, so it is a refusal too, not an outage -
-  otherwise most people would never learn of the revocation. Keeping on serving would let every expired
-  organization in for as long as nobody noticed.
+  (``workeasy360_access_unverified``). A refusal is about the *client*, so it closes the whole client for
+  ``CLIENT_REFUSED_SECONDS``: every question - a person's, an organization's, background work's - fails
+  closed without being asked; then one is asked again. A 429 within ``RATE_LIMIT_AFTER_REFUSAL_SECONDS`` of
+  the last refusal is Workeasy360's failed-client-authentication limiter, so it is a refusal too.
 - With ``WORKEASY360_SSO_ONLY`` on, a user with no ``ExternalIdentity`` (a session opened before SSO-only was
   switched on) is refused (``workeasy360_sign_in_required``) in an organization linked to Workeasy360: there
   is no subject to check per person, so the session could otherwise outlive the person's removal in
@@ -36,9 +37,9 @@ lapsed or cancelled subscription - within that window.
 - A known denial never lapses into access: it is kept without expiry, and every process also keeps its
   own copy of the last answers, so a cache outage or eviction cannot hand access back. A first check is
   never waved through because another request happens to be asking.
-- The shared cache is an optimisation, never a dependency: every cache operation here fails open (a read
-  is a miss, a write or delete is a no-op, ``add`` says "unknown"), so a Redis outage costs extra provider
-  questions and a subject query per request, never a 500. This module's own per-process copy then stands in.
+- The shared cache is an optimisation, never a dependency: every cache operation fails open (the
+  connector's, and the subject lookup's here), so a Redis outage costs extra provider questions and a
+  subject query per request, never a 500.
 - Only organizations linked to Workeasy360 are checked: an EasyBook-only organization has no
   Workeasy360 entitlement to lose.
 - Reads need ``allow``; writes also need ``write_allowed`` - a suspended subscription is read-only, so the
@@ -50,55 +51,53 @@ Enforced for every organization-scoped request through ``core.access`` (register
 see why and sign out.
 """
 
-import hashlib
 import logging
-import threading
 import time
-from collections import OrderedDict
+import uuid
 from dataclasses import dataclass
 from typing import Any
 
 from django.conf import settings
 from django.core.cache import cache
+from django.dispatch import receiver
 from rest_framework.permissions import SAFE_METHODS
+from workeasy360_sso import entitlements as connector
+from workeasy360_sso.conf import ConfigurationError
+from workeasy360_sso.signals import entitlement_checked
 
 from core.exceptions import ApplicationError
-from sso.config import get_client, is_configured
+from sso.config import connector as connector_config
+from sso.config import is_configured
 from sso.models import ExternalIdentity
-from sso.oidc import SSOError
 
 logger = logging.getLogger(__name__)
 
 #: Used when the provider names no cadence; also the longest an answer is trusted.
-DEFAULT_REVALIDATE_SECONDS = 900
-MIN_REVALIDATE_SECONDS = 30
-#: A denial (or a refusal) is re-asked this soon, so an owner who renews is not kept out for the window.
-DENIAL_RECHECK_SECONDS = 60
+DEFAULT_REVALIDATE_SECONDS = connector.MAX_ALLOW_TTL
+MIN_REVALIDATE_SECONDS = connector.MIN_ALLOW_TTL
+#: A denial is re-asked this soon for a waiting person, so an owner who renews is not kept out for the window.
+DENIAL_RECHECK_SECONDS = connector.PERSON_DENY_RECHECK
 #: Background work trusts a denial this long: an expired organization's jobs must not cost a question a
 #: minute each (the window an allow is trusted for).
-BACKGROUND_DENIAL_SECONDS = 900
+BACKGROUND_DENIAL_SECONDS = connector.BACKGROUND_DENY_RECHECK
+#: How long a refusal of EasyBook's own client closes every question (and is re-asked after, whoever asks).
+CLIENT_REFUSED_SECONDS = connector.CLIENT_REFUSAL_HOLD
+#: A 429 this soon after the last refusal is the failed-client-authentication limiter, so it is a refusal.
+RATE_LIMIT_AFTER_REFUSAL_SECONDS = connector.REFUSAL_429_WINDOW
+#: After a failed check, how long before the provider is asked again (the last answer stands meanwhile).
+FAILURE_BACKOFF_SECONDS = connector.OUTAGE_BACKOFF
 #: How long the (user -> Workeasy360 subject) lookup is kept, so a request costs no extra query. Only a
 #: found subject is kept: caching "no identity" could outlive the sign-in that creates one.
 SUBJECT_CACHE_SECONDS = 300
-#: After a failed check, how long before the provider is asked again (the last answer stands meanwhile).
-FAILURE_BACKOFF_SECONDS = 60
-#: One request asks; the others use the last answer until it has.
-REFRESH_LOCK_SECONDS = 15
-#: How long a last ``allow`` is kept to stand in for the provider during an outage (a denial: forever).
-LAST_KNOWN_KEEP_SECONDS = 7 * 24 * 3600
-#: Bound on this process's own copy of the last answers.
-LOCAL_MAX_ENTRIES = 10_000
 
-ACCESS_ENDED = "workeasy360_access_ended"
-ACCESS_UNVERIFIED = "workeasy360_access_unverified"
+ACCESS_ENDED = connector.ACCESS_ENDED
+ACCESS_UNVERIFIED = connector.ACCESS_UNVERIFIED
 SIGN_IN_REQUIRED = "workeasy360_sign_in_required"
-READ_ONLY = "workeasy360_read_only"
+READ_ONLY = connector.READ_ONLY
 #: The reason recorded when Workeasy360 refused EasyBook's own client.
 REFUSED = "refused"
 #: The reason of an ``Access`` for a user who must sign in with Workeasy360 first (SSO-only, no identity).
 SIGN_IN_REQUIRED_REASON = "sign_in_required"
-#: A 429 this soon after a refusal is the failed-client-authentication limiter, so it is a refusal.
-RATE_LIMIT_AFTER_REFUSAL_SECONDS = 300
 #: Reasons Workeasy360 gives only for a per-person question (design section 4).
 PERSON_REASONS = ("membership_inactive", "no_seat")
 
@@ -114,15 +113,6 @@ class Access:
 
 UNCHECKED = Access(allowed=True, write_allowed=True, reason="unchecked")
 
-# This process's copy of the last answers and of its failure back-offs: the shared cache's stand-in when
-# it is down or has evicted an entry.
-_local_lock = threading.Lock()
-_local: "OrderedDict[str, dict[str, Any]]" = OrderedDict()
-_local_backoff: dict[str, float] = {}
-#: When Workeasy360 last refused this client (0: never) - this process's copy of the shared marker.
-_client_refused_at = 0.0
-CLIENT_REFUSED_KEY = "workeasy360:entitlement:client_refused"
-
 
 _cache_warned_at = 0.0
 CACHE_WARNING_INTERVAL_SECONDS = 60
@@ -137,46 +127,6 @@ def _cache_failed(operation: str, exc: Exception) -> None:
         logger.warning("sso.entitlement_cache_unavailable", extra={"operation": operation, "error": type(exc).__name__})
 
 
-def _cache_get(key: str):
-    try:
-        return cache.get(key)
-    except Exception as exc:  # any cache-backend failure is a miss
-        _cache_failed("get", exc)
-        return None
-
-
-def _cache_set(key: str, value, timeout) -> None:
-    try:
-        cache.set(key, value, timeout)
-    except Exception as exc:
-        _cache_failed("set", exc)
-
-
-def _cache_add(key: str, value, timeout):
-    """``cache.add``'s answer, or None when the cache cannot say (then the caller asks)."""
-    try:
-        return cache.add(key, value, timeout)
-    except Exception as exc:
-        _cache_failed("add", exc)
-        return None
-
-
-def _cache_delete(key: str) -> None:
-    try:
-        cache.delete(key)
-    except Exception as exc:
-        _cache_failed("delete", exc)
-
-
-def _key(workeasy360_organization_id, subject: str | None = None) -> str:
-    """The cache key of one question: the organization's, or (organization, person) when a subject is
-    given. The subject is opaque and unbounded, so it is hashed into the key."""
-    base = f"workeasy360:entitlement:{workeasy360_organization_id}"
-    if not subject:
-        return base
-    return f"{base}:p:{hashlib.sha256(subject.encode()).hexdigest()[:32]}"
-
-
 def _subject_key(user_id) -> str:
     return f"workeasy360:subject:{user_id}"
 
@@ -187,7 +137,11 @@ def subject_for(user) -> str:
     no query; "no identity" is not (it is rare, and a cached "" could hide an identity created a moment
     later). ``forget_subject`` is still called, after commit, when an identity is created."""
     key = _subject_key(user.pk)
-    cached = _cache_get(key)
+    try:
+        cached = cache.get(key)
+    except Exception as exc:  # any cache-backend failure is a miss
+        _cache_failed("get", exc)
+        cached = None
     if cached:
         return cached
     subject = (
@@ -197,76 +151,51 @@ def subject_for(user) -> str:
         or ""
     )
     if subject:
-        _cache_set(key, subject, SUBJECT_CACHE_SECONDS)
+        try:
+            cache.set(key, subject, SUBJECT_CACHE_SECONDS)
+        except Exception as exc:
+            _cache_failed("set", exc)
     return subject
 
 
 def forget_subject(user_id) -> None:
-    _cache_delete(_subject_key(user_id))
+    try:
+        cache.delete(_subject_key(user_id))
+    except Exception as exc:
+        _cache_failed("delete", exc)
 
 
-def _access(record: dict[str, Any]) -> Access:
-    allowed = record.get("decision") == "allow"
+def _access(decision: connector.AccessDecision) -> Access:
+    if decision.provisional:
+        return UNCHECKED
+    if decision.code == connector.ACCESS_UNVERIFIED:
+        return Access(allowed=False, write_allowed=False, reason=REFUSED)
     return Access(
-        allowed=allowed, write_allowed=allowed and bool(record.get("write_allowed")), reason=str(record.get("reason", ""))
+        allowed=decision.allowed, write_allowed=decision.allowed and decision.write_allowed, reason=decision.reason
     )
 
 
-def _fresh_for(answer: dict[str, Any]) -> int:
-    if answer.get("decision") != "allow":
-        return DENIAL_RECHECK_SECONDS
+def _check(organization, workeasy360_id, subject: str, *, background: bool) -> Access:
+    """The cached-or-asked answer for one question. ``background``: a denial is trusted for
+    ``BACKGROUND_DENIAL_SECONDS``, not ``DENIAL_RECHECK_SECONDS`` (nobody is waiting on a renewal)."""
     try:
-        seconds = int(answer.get("revalidate_after", DEFAULT_REVALIDATE_SECONDS))
-    except (TypeError, ValueError):
-        seconds = DEFAULT_REVALIDATE_SECONDS
-    return max(MIN_REVALIDATE_SECONDS, min(seconds, DEFAULT_REVALIDATE_SECONDS))
-
-
-def _last_known(key: str) -> dict[str, Any] | None:
-    record = _cache_get(key)
-    if record:
-        return record
-    with _local_lock:
-        return _local.get(key)
-
-
-def _remember(key: str, record: dict[str, Any]) -> None:
-    _cache_set(key, record, None if record["decision"] != "allow" else LAST_KNOWN_KEEP_SECONDS)
-    with _local_lock:
-        _local[key] = record
-        _local.move_to_end(key)
-        while len(_local) > LOCAL_MAX_ENTRIES:
-            _local.popitem(last=False)
-        _local_backoff.pop(key, None)
-
-
-def _backing_off(key: str, now: float) -> bool:
-    if _cache_get(f"{key}:backoff"):
-        return True
-    with _local_lock:
-        return _local_backoff.get(key, 0) > now
-
-
-def _back_off(key: str, now: float) -> None:
-    _cache_set(f"{key}:backoff", 1, FAILURE_BACKOFF_SECONDS)
-    with _local_lock:
-        _local_backoff[key] = now + FAILURE_BACKOFF_SECONDS
-
-
-def _last_refusal() -> float:
-    shared = _cache_get(CLIENT_REFUSED_KEY)
-    return max(_client_refused_at, shared if isinstance(shared, (int, float)) else 0.0)
-
-
-def _client_refused(now: float) -> bool:
-    """Is the whole client closed? True for ``DENIAL_RECHECK_SECONDS`` after Workeasy360 refused it."""
-    return now - _last_refusal() < DENIAL_RECHECK_SECONDS
-
-
-def _mark_client_refused(now: float) -> None:
-    global _client_refused_at
-    _client_refused_at = now
-    _cache_set(CLIENT_REFUSED_KEY, now, RATE_LIMIT_AFTER_REFUSAL_SECONDS)
+        config = connector_config()
+    except ConfigurationError as exc:
+        # Configuration that cannot even be loaded (an unreadable key file): nothing can be asked, which is
+        # an outage like any other - never a denial, never a 500.
+        logger.warning(
+            "sso.entitlement_unavailable",
+            extra={"code": "provider_misconfigured", "detail": str(exc), "organization_id": str(organization.pk)},
+        )
+        return UNCHECKED
+    decision = connector.check(
+        config,
+        organization_id=uuid.UUID(str(workeasy360_id)),
+        subject=subject or None,
+        background=background,
+        context={"organization_id": str(organization.pk)},
+    )
+    return _access(decision)
 
 
 def access_for(organization, user=None) -> Access | None:
@@ -280,96 +209,63 @@ def access_for(organization, user=None) -> Access | None:
     subject = subject_for(user) if person else ""
     if person and not subject and settings.WORKEASY360_SSO_ONLY:
         return Access(allowed=False, write_allowed=False, reason=SIGN_IN_REQUIRED_REASON)
-    return _ask(organization, str(workeasy360_id), subject, denial_trust=DENIAL_RECHECK_SECONDS)
+    return _check(organization, workeasy360_id, subject, background=False)
 
 
-def _ask(organization, workeasy360_id: str, subject: str, *, denial_trust: int) -> Access:
-    key = _key(workeasy360_id, subject)
-    known = _last_known(key)
-    now = time.time()
-    if _client_refused(now):
-        # Workeasy360 refused EasyBook's own client a moment ago: nothing can be confirmed, for anyone.
-        return Access(allowed=False, write_allowed=False, reason=REFUSED)
-    if known and now - known.get("checked_at", 0) < _trusted_for(known, denial_trust):
-        return _access(known)
-    if _backing_off(key, now):
-        # The provider failed a moment ago: the last answer stands, or (none yet) access continues.
-        return _access(known) if known else UNCHECKED
-    # True: this request asks. False: another one is asking - use the last answer if there is one, and
-    # ask too if there is none (a first check is never waved through). None: the cache is down - ask.
-    if _cache_add(f"{key}:refreshing", 1, REFRESH_LOCK_SECONDS) is False and known:
-        return _access(known)
-    try:
-        answer = get_client().verify_entitlement(workeasy360_id, subject=subject or None)
-    except Exception as exc:  # anything that is not an answer is handled below, never a 500
-        limiter = (
-            isinstance(exc, SSOError)
-            and exc.status == 429
-            and now - _last_refusal() < RATE_LIMIT_AFTER_REFUSAL_SECONDS
+def stored_answer(workeasy360_id, subject: str = "") -> connector.Answer | None:
+    """The last answer known for this organization (and person), however old; for tests and support."""
+    return connector.last_answer(
+        connector_config(), organization_id=uuid.UUID(str(workeasy360_id)), subject=subject or None
+    )
+
+
+@receiver(entitlement_checked, dispatch_uid="sso.entitlement.log_question")
+def _log_question(
+    sender: Any,
+    *,
+    organization_id: uuid.UUID,
+    subject: str,
+    outcome: str,
+    answer: connector.Answer | None,
+    previous: connector.Answer | None,
+    detail: str,
+    rate_limited: bool,
+    context: dict[str, Any] | None,
+    **kwargs: Any,
+) -> None:
+    """EasyBook's log lines for every question actually put to Workeasy360 (never for a cached answer)."""
+    easybook_organization = (context or {}).get("organization_id") or str(organization_id)
+    if outcome == "refused":
+        # Workeasy360 answered and refused EasyBook's own client (or is rate-limiting a client that was just
+        # refused): not an outage. The whole client is closed, fail closed, loudly.
+        logger.error(
+            "sso.entitlement_refused",
+            extra={"detail": detail, "organization_id": easybook_organization, "rate_limited": rate_limited},
         )
-        if limiter or (isinstance(exc, SSOError) and exc.code == "provider_refused"):
-            # Workeasy360 answered and refused EasyBook's own client (or is rate-limiting a client that was
-            # just refused): not an outage. Close the whole client, fail closed, loudly.
-            logger.error(
-                "sso.entitlement_refused",
-                extra={"detail": exc.detail if isinstance(exc, SSOError) else "", "organization_id": str(organization.pk)},
-            )
-            _mark_client_refused(now)
-            record = {
-                "decision": "deny",
-                "reason": REFUSED,
-                "write_allowed": False,
-                "checked_at": now,
-                "fresh_for": DENIAL_RECHECK_SECONDS,
-            }
-            _remember(key, record)
-            return _access(record)
-        # An outage: never a denial. Logged loudly enough to be noticed - while it lasts, access changes
-        # made in Workeasy360 are not reaching EasyBook. (A non-SSOError - an unreadable key file, a broken
-        # HTTP reply - is logged by its type only.)
+    elif outcome == "outage":
+        # An outage: never a denial. Logged loudly enough to be noticed - while it lasts, access changes made
+        # in Workeasy360 are not reaching EasyBook.
         logger.warning(
             "sso.entitlement_unavailable",
             extra={
-                "code": exc.code if isinstance(exc, SSOError) else type(exc).__name__,
-                "detail": exc.detail if isinstance(exc, SSOError) else "",
-                "organization_id": str(organization.pk),
-                "last_known": known.get("decision") if known else None,
+                "code": "provider_unavailable",
+                "detail": detail,
+                "organization_id": easybook_organization,
+                "last_known": previous.decision if previous else None,
             },
         )
-        _back_off(key, now)
-        return _access(known) if known else UNCHECKED
-    finally:
-        _cache_delete(f"{key}:refreshing")
-    record = {
-        "decision": answer["decision"],
-        "reason": str(answer.get("reason", ""))[:64],
-        "write_allowed": bool(answer.get("write_allowed")),
-        "checked_at": now,
-        "fresh_for": _fresh_for(answer),
-    }
-    _remember(key, record)
-    if not known or known.get("decision") != record["decision"] or known.get("reason") != record["reason"]:
+    elif answer is not None and (
+        previous is None or previous.decision != answer.decision or previous.reason != answer.reason
+    ):
         logger.info(
             "sso.entitlement_changed",
             extra={
-                "organization_id": str(organization.pk),
-                "decision": record["decision"],
-                "reason": record["reason"],
+                "organization_id": easybook_organization,
+                "decision": answer.decision,
+                "reason": answer.reason,
                 "per_person": bool(subject),
             },
         )
-    return _access(record)
-
-
-def _trusted_for(known: dict[str, Any], denial_trust: int) -> int:
-    """How long ``known`` can be used without asking again. A denial's own window is
-    ``DENIAL_RECHECK_SECONDS``; background work extends it to ``denial_trust``. A refusal of EasyBook's own
-    client is not a denial of the organization (a credential or integration fault someone is fixing): it is
-    re-asked every ``DENIAL_RECHECK_SECONDS`` whoever is asking."""
-    fresh_for = known.get("fresh_for", 0)
-    if known.get("decision") != "allow" and known.get("reason") != REFUSED:
-        return max(fresh_for, denial_trust)
-    return fresh_for
 
 
 def background_gate(organization, task: str) -> bool:
@@ -382,7 +278,7 @@ def background_gate(organization, task: str) -> bool:
     if not workeasy360_id or not is_configured():
         return True
     try:
-        access = _ask(organization, str(workeasy360_id), "", denial_trust=BACKGROUND_DENIAL_SECONDS)
+        access = _check(organization, workeasy360_id, "", background=True)
     except Exception as exc:  # a job must never fail because the question could not be asked
         logger.warning(
             "sso.entitlement_unavailable",
@@ -463,9 +359,6 @@ def gate(request, view) -> None:
 
 
 def clear_local() -> None:
-    """Forget this process's copy of the answers (tests; the shared cache is cleared separately)."""
-    global _client_refused_at
-    with _local_lock:
-        _local.clear()
-        _local_backoff.clear()
-        _client_refused_at = 0.0
+    """Forget this process's copy of the answers, back-offs and refusal marks (tests; the shared cache is
+    cleared separately)."""
+    connector.reset_state()

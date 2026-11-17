@@ -10,8 +10,11 @@ confirm production.py actually wires that function up end to end.
 import os
 import subprocess
 import sys
+from functools import lru_cache
 from pathlib import Path
 
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import rsa
 from django.test import SimpleTestCase
 
 from config.settings.preflight import validate_production_settings, validate_workeasy360_settings
@@ -107,6 +110,16 @@ class ValidateProductionSettingsTests(SimpleTestCase):
             validate_production_settings(**kwargs)
 
 
+@lru_cache(maxsize=1)
+def _throwaway_private_key():
+    """A real (throwaway) client key: with SSO-only on, the WorkEasy360 sign-in connector's system checks
+    refuse a production process whose key is not a usable PEM, as they should."""
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    return key.private_bytes(
+        serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption()
+    ).decode()
+
+
 def _run_check(overrides=None):
     # A real production deployment ships no `backend/.env` file — secrets and
     # config arrive as real environment variables — so only overriding
@@ -126,7 +139,7 @@ def _run_check(overrides=None):
         "WORKEASY360_CLIENT_ID": "client-id",
         "WORKEASY360_REDIRECT_URI": "https://book.workeasy360.com/api/auth/callback/workeasy360",
         "WORKEASY360_KEY_ID": "credential-id",
-        "WORKEASY360_PRIVATE_KEY": "presence is all the boot check reads",
+        "WORKEASY360_PRIVATE_KEY": _throwaway_private_key(),
         **(overrides or {}),
     }
     return subprocess.run(
@@ -161,6 +174,17 @@ class ProductionSettingsWiringTests(SimpleTestCase):
         result = _run_check({"WORKEASY360_PRODUCT_CODE": ""})
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("WORKEASY360_PRODUCT_CODE", result.stderr)
+
+    def test_an_unusable_client_key_stops_an_sso_only_process(self):
+        # The connector validates the key itself (workeasy360_sso.E001): presence is not enough.
+        result = _run_check({"WORKEASY360_PRIVATE_KEY": "not a key"})
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("workeasy360_sso.E001", result.stderr)
+
+    def test_insecure_http_is_refused(self):
+        result = _run_check({"WORKEASY360_ALLOW_INSECURE_HTTP": "1"})
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("WORKEASY360_ALLOW_INSECURE_HTTP", result.stderr)
 
 
 VALID_WORKEASY360 = {
@@ -212,6 +236,13 @@ class Workeasy360SettingsTests(SimpleTestCase):
     def test_issuer_with_trailing_slash_rejected(self):
         with self.assertRaisesMessage(RuntimeError, "exact string"):
             self._check(issuer="https://auth.workeasy360.com/")
+
+    def test_insecure_http_is_refused_even_with_sign_in_off(self):
+        with self.assertRaisesMessage(RuntimeError, "WORKEASY360_ALLOW_INSECURE_HTTP"):
+            self._check(allow_insecure_http=True)
+        with self.assertRaisesMessage(RuntimeError, "WORKEASY360_ALLOW_INSECURE_HTTP"):
+            self._check(sso_only=False, issuer="", client_id="", redirect_uri="", key_id="", has_private_key=False,
+                        allow_insecure_http=True)
 
 
 class HostnameTopologyTests(SimpleTestCase):

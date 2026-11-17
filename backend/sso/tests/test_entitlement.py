@@ -1,6 +1,8 @@
 """Workeasy360 entitlement, re-checked while EasyBook's own session lives on (sso/entitlement.py): an
 organization whose access has ended is refused within Workeasy360's cadence, never because of an outage."""
 
+import contextlib
+import uuid
 from unittest import mock
 
 import redis.exceptions
@@ -8,12 +10,14 @@ from django.core.cache import cache
 from django.db import connection
 from django.test.utils import CaptureQueriesContext
 from rest_framework.test import APIClient
+from workeasy360_sso import discovery
+from workeasy360_sso import entitlements as connector
+from workeasy360_sso.conf import ConfigurationError
 
 from core.tests.factories import make_org_with_owner
 from sso import entitlement
 from sso.models import ExternalIdentity
-from sso.tests.fakes import ISSUER
-from sso.tests.linked import age_client_refusal
+from sso.tests.fakes import ENTITLEMENT_ENDPOINT, ISSUER
 from sso.tests.test_sign_in import W360_ORG, SignInTestCase
 
 READ = "/api/v1/organizations/members/"
@@ -35,10 +39,7 @@ class EntitlementTests(SignInTestCase):
         )
 
     def age_answer(self, seconds):
-        key = entitlement._key(W360_ORG, PERSON)
-        record = cache.get(key)
-        record["checked_at"] -= seconds
-        cache.set(key, record, entitlement.LAST_KNOWN_KEEP_SECONDS)
+        self.clock.advance(seconds)
 
     def code_of(self, response):
         return response.data["error"]["code"]
@@ -80,7 +81,8 @@ class EntitlementTests(SignInTestCase):
             "decision": "allow", "reason": "entitled", "write_allowed": True, "revalidate_after": 86400,
         }
         self.assertEqual(self.api.get(READ).status_code, 200)
-        self.assertEqual(cache.get(entitlement._key(W360_ORG, PERSON))["fresh_for"], entitlement.DEFAULT_REVALIDATE_SECONDS)
+        answer = entitlement.stored_answer(W360_ORG, PERSON)
+        self.assertEqual(answer.trusted_until - answer.checked_at, entitlement.DEFAULT_REVALIDATE_SECONDS)
 
     def test_read_only_refuses_writes_but_keeps_reads(self):
         self.provider.entitlement = {"decision": "allow", "reason": "entitled", "write_allowed": False}
@@ -102,15 +104,15 @@ class EntitlementTests(SignInTestCase):
         self.assertEqual(self.api.get(READ).status_code, 403)
         self.age_answer(entitlement.DENIAL_RECHECK_SECONDS + 1)
         self.provider.entitlement_status = 503
-        asked = self.provider.calls.count(("POST", "https://auth.workeasy360.test/integrations/entitlements/verify"))
+        asked = self.provider.calls.count(("POST", ENTITLEMENT_ENDPOINT))
         self.assertEqual(self.api.get(READ).status_code, 403)  # an outage never turns a denial into access...
         self.assertEqual(self.api.get(READ).status_code, 403)
-        after = self.provider.calls.count(("POST", "https://auth.workeasy360.test/integrations/entitlements/verify"))
+        after = self.provider.calls.count(("POST", ENTITLEMENT_ENDPOINT))
         self.assertEqual(after, asked + 1)  # ...and backs off after one failed attempt
 
     def test_a_provider_that_does_not_offer_the_api_does_not_lock_anyone_out(self):
         self.provider.advertise_entitlement = False
-        entitlement.get_client().metadata(refresh=True)  # the sign-in cached the old discovery document
+        discovery.reset_cache()  # the sign-in cached the old discovery document
         cache.clear()
         self.assertEqual(self.api.get(READ).status_code, 200)
         self.assertEqual(self.provider.entitlement_forms, [])
@@ -118,7 +120,7 @@ class EntitlementTests(SignInTestCase):
     def test_only_one_request_asks_at_a_time(self):
         self.assertEqual(self.api.get(READ).status_code, 200)
         self.age_answer(901)
-        cache.add(f"{entitlement._key(W360_ORG, PERSON)}:refreshing", 1, entitlement.REFRESH_LOCK_SECONDS)
+        hold_lock(PERSON)
         asked = len(self.provider.entitlement_forms)
         self.assertEqual(self.api.get(READ).status_code, 200)  # the last answer is used meanwhile
         self.assertEqual(len(self.provider.entitlement_forms), asked)
@@ -130,8 +132,7 @@ class EntitlementTests(SignInTestCase):
         self.assertEqual(response.status_code, 403)
         self.assertEqual(self.code_of(response), entitlement.ACCESS_UNVERIFIED)
         self.provider.entitlement_status = 200  # fixed: back within the denial recheck
-        self.age_answer(entitlement.DENIAL_RECHECK_SECONDS + 1)
-        age_client_refusal(entitlement.DENIAL_RECHECK_SECONDS + 1)
+        self.age_answer(entitlement.CLIENT_REFUSED_SECONDS + 1)
         self.assertEqual(self.api.get(READ).status_code, 200)
 
     def test_a_known_denial_survives_losing_the_shared_cache(self):
@@ -144,18 +145,21 @@ class EntitlementTests(SignInTestCase):
     def test_a_cache_outage_never_turns_a_denial_into_access(self):
         self.provider.entitlement = {"decision": "deny", "reason": "expired", "write_allowed": False}
         self.assertEqual(self.api.get(READ).status_code, 403)
-        with mock.patch.object(entitlement.cache, "get", return_value=None), mock.patch.object(
-            entitlement.cache, "add", return_value=None
-        ):
+        with mock.patch("workeasy360_sso.entitlements._cache", return_value=ForgetfulCache()):
             self.assertEqual(self.api.get(READ).status_code, 403)
 
     def test_a_first_check_is_not_waved_through_while_another_request_asks(self):
         self.provider.entitlement = {"decision": "deny", "reason": "expired", "write_allowed": False}
-        cache.add(f"{entitlement._key(W360_ORG, PERSON)}:refreshing", 1, entitlement.REFRESH_LOCK_SECONDS)
+        hold_lock(PERSON)
         self.assertEqual(self.api.get(READ).status_code, 403)
 
     def test_an_unexpected_failure_is_an_outage_not_an_error(self):
-        with mock.patch.object(entitlement.get_client(), "verify_entitlement", side_effect=ValueError("bad key")):
+        with mock.patch("workeasy360_sso.client_auth.authentication", side_effect=ValueError("bad key")):
+            self.assertEqual(self.api.get(READ).status_code, 200)
+
+    def test_configuration_that_cannot_be_loaded_is_an_outage_not_an_error(self):
+        unreadable = ConfigurationError("WORKEASY360_PRIVATE_KEY_FILE could not be read.")
+        with mock.patch("sso.entitlement.connector_config", side_effect=unreadable):
             self.assertEqual(self.api.get(READ).status_code, 200)
 
     def test_a_read_only_organization_can_still_download_and_ask(self):
@@ -193,11 +197,8 @@ class PerPersonTests(SignInTestCase):
     def code_of(self, response):
         return response.data["error"]["code"]
 
-    def age(self, subject, seconds):
-        key = entitlement._key(W360_ORG, subject)
-        record = cache.get(key)
-        record["checked_at"] -= seconds
-        cache.set(key, record, entitlement.LAST_KNOWN_KEEP_SECONDS)
+    def age(self, seconds):
+        self.clock.advance(seconds)
 
     def test_a_person_in_good_standing_is_allowed(self):
         self.assertEqual(self.api.get(READ).status_code, 200)
@@ -234,26 +235,24 @@ class PerPersonTests(SignInTestCase):
         self.assertEqual(sorted(form["subject"] for form in self.provider.entitlement_forms), [PERSON, OTHER])
 
     def test_per_person_keys_do_not_collide(self):
+        another = "0d6c0a3e-8e52-4a63-8b0e-5a1d2c3b4f50"
         keys = {
-            entitlement._key(W360_ORG),
-            entitlement._key(W360_ORG, PERSON),
-            entitlement._key(W360_ORG, OTHER),
-            entitlement._key("another-organization", PERSON),
+            question_key(W360_ORG),
+            question_key(W360_ORG, PERSON),
+            question_key(W360_ORG, OTHER),
+            question_key(another, PERSON),
         }
         self.assertEqual(len(keys), 4)
-        # A subject is opaque and unbounded: it never makes the key unusable.
-        self.assertLess(len(entitlement._key(W360_ORG, "s" * 255)), 120)
-        self.assertNotIn(PERSON, entitlement._key(W360_ORG, PERSON))
         self.api.get(READ)
-        self.assertIsNotNone(cache.get(entitlement._key(W360_ORG, PERSON)))
-        self.assertIsNone(cache.get(entitlement._key(W360_ORG)))  # the organization's own answer is not touched
+        self.assertIsNotNone(entitlement.stored_answer(W360_ORG, PERSON))
+        self.assertIsNone(entitlement.stored_answer(W360_ORG))  # the organization's own answer is not touched
 
     def test_a_denial_is_asked_again_after_a_minute_for_that_person_only(self):
         self.provider.person_entitlements[PERSON] = {**DENY, "reason": "no_seat"}
         self.assertEqual(self.api.get(READ).status_code, 403)
         self.provider.person_entitlements[PERSON] = {"decision": "allow", "reason": "entitled", "write_allowed": True}
         self.assertEqual(self.api.get(READ).status_code, 403)  # inside the minute: the last answer
-        self.age(PERSON, entitlement.DENIAL_RECHECK_SECONDS + 1)
+        self.age(entitlement.DENIAL_RECHECK_SECONDS + 1)
         self.assertEqual(self.api.get(READ).status_code, 200)
 
     def test_an_outage_keeps_the_persons_last_answer_and_backs_off_per_person(self):
@@ -261,8 +260,7 @@ class PerPersonTests(SignInTestCase):
         self.assertEqual(self.api.get(READ).status_code, 403)
         other = self.sign_in_other()
         self.assertEqual(other.get(READ).status_code, 200)
-        self.age(PERSON, entitlement.DENIAL_RECHECK_SECONDS + 1)
-        self.age(OTHER, 901)
+        self.age(901)  # the person's denial and the colleague's allow are both due again
         self.provider.entitlement_status = 503
         self.assertEqual(self.api.get(READ).status_code, 403)  # an outage never turns a denial into access
         self.assertEqual(other.get(READ).status_code, 200)  # ...nor an allow into one
@@ -284,8 +282,8 @@ class PerPersonTests(SignInTestCase):
 
     def test_the_persons_answer_is_single_flight_on_the_persons_key(self):
         self.assertEqual(self.api.get(READ).status_code, 200)
-        self.age(PERSON, 901)
-        cache.add(f"{entitlement._key(W360_ORG, PERSON)}:refreshing", 1, entitlement.REFRESH_LOCK_SECONDS)
+        self.age(901)
+        hold_lock(PERSON)
         asked = len(self.provider.entitlement_forms)
         self.assertEqual(self.api.get(READ).status_code, 200)  # the last answer meanwhile
         self.assertEqual(len(self.provider.entitlement_forms), asked)
@@ -349,10 +347,7 @@ class ClientRefusalTests(SignInTestCase):
         return response.data["error"]["code"]
 
     def age_both(self, seconds):
-        for subject in (PERSON, OTHER):
-            record = cache.get(entitlement._key(W360_ORG, subject))
-            record["checked_at"] -= seconds
-            cache.set(entitlement._key(W360_ORG, subject), record, entitlement.LAST_KNOWN_KEEP_SECONDS)
+        self.clock.advance(seconds)
 
     def refuse_through_first_person(self):
         self.assertEqual(self.api.get(READ).status_code, 200)
@@ -371,12 +366,9 @@ class ClientRefusalTests(SignInTestCase):
         self.assertEqual(len(self.provider.entitlement_forms), asked)
 
     def test_a_fresh_allow_does_not_survive_a_refusal(self):
-        self.assertEqual(self.other.get(READ).status_code, 200)  # a fresh allow for the colleague
         self.assertEqual(self.api.get(READ).status_code, 200)
-        self.age_both(0)
-        record = cache.get(entitlement._key(W360_ORG, PERSON))
-        record["checked_at"] -= 901
-        cache.set(entitlement._key(W360_ORG, PERSON), record, entitlement.LAST_KNOWN_KEEP_SECONDS)
+        self.clock.advance(901)  # the person's answer is due again...
+        self.assertEqual(self.other.get(READ).status_code, 200)  # ...while the colleague's allow is fresh
         self.provider.entitlement_status = 401
         self.assertEqual(self.code_of(self.api.get(READ)), entitlement.ACCESS_UNVERIFIED)
         self.assertEqual(self.code_of(self.other.get(READ)), entitlement.ACCESS_UNVERIFIED)
@@ -384,15 +376,14 @@ class ClientRefusalTests(SignInTestCase):
     def test_after_a_minute_one_question_is_asked_again(self):
         self.refuse_through_first_person()
         self.provider.entitlement_status = 200  # the credential was restored
-        age_client_refusal(entitlement.DENIAL_RECHECK_SECONDS + 1)
-        self.age_both(entitlement.DENIAL_RECHECK_SECONDS + 1)  # and the person's own refused answer
+        self.age_both(entitlement.CLIENT_REFUSED_SECONDS + 1)  # the hold, and the person's own refused answer
         asked = len(self.provider.entitlement_forms)
         self.assertEqual(self.api.get(READ).status_code, 200)
         self.assertEqual(len(self.provider.entitlement_forms), asked + 1)
 
     def test_a_429_soon_after_a_refusal_is_the_limiter_not_an_outage(self):
         self.refuse_through_first_person()
-        age_client_refusal(entitlement.DENIAL_RECHECK_SECONDS + 1)  # the minute is over; the limiter is not
+        self.age_both(entitlement.CLIENT_REFUSED_SECONDS + 1)  # the minute is over; the limiter is not
         self.provider.entitlement_status = 429
         response = self.other.get(READ)
         self.assertEqual(self.code_of(response), entitlement.ACCESS_UNVERIFIED)
@@ -404,23 +395,19 @@ class ClientRefusalTests(SignInTestCase):
 
     def test_a_429_long_after_a_refusal_is_an_outage_again(self):
         self.refuse_through_first_person()
-        age_client_refusal(entitlement.RATE_LIMIT_AFTER_REFUSAL_SECONDS + 1)
+        self.age_both(entitlement.RATE_LIMIT_AFTER_REFUSAL_SECONDS + 1)
         self.provider.entitlement_status = 429
-        self.age_both(0)
         self.assertEqual(self.other.get(READ).status_code, 200)
 
     def test_the_refusal_survives_a_redis_outage(self):
         self.refuse_through_first_person()
-        with mock.patch.object(entitlement, "cache", DeadCache()):
+        with dead_cache():
             self.provider.entitlement_status = 200
             self.assertEqual(self.code_of(self.other.get(READ)), entitlement.ACCESS_UNVERIFIED)
 
     def test_a_refusal_is_visible_to_other_processes_through_the_shared_cache(self):
         self.refuse_through_first_person()
         entitlement.clear_local()  # another process: no local copy, only the shared cache
-        cache_marker = cache.get(entitlement.CLIENT_REFUSED_KEY)
-        self.assertIsNotNone(cache_marker)
-        entitlement._client_refused_at = 0.0
         self.assertEqual(self.code_of(self.other.get(READ)), entitlement.ACCESS_UNVERIFIED)
 
 
@@ -484,6 +471,42 @@ class DeadCache:
         return fail
 
 
+class ForgetfulCache:
+    """A cache that answers but keeps nothing: every read misses, and ``add`` cannot say."""
+
+    def get(self, *args, **kwargs):
+        return None
+
+    def add(self, *args, **kwargs):
+        return None
+
+    def set(self, *args, **kwargs):
+        return None
+
+    def delete(self, *args, **kwargs):
+        return None
+
+
+@contextlib.contextmanager
+def dead_cache():
+    """Redis down for both caches the entitlement check uses: the connector's (answers, back-offs, refusal
+    marks) and EasyBook's own subject lookup."""
+    with mock.patch("workeasy360_sso.entitlements._cache", return_value=DeadCache()), mock.patch.object(
+        entitlement, "cache", DeadCache()
+    ):
+        yield
+
+
+def question_key(workeasy360_id, subject=None):
+    """The connector's cache key of one entitlement question."""
+    return connector._key(entitlement.connector_config(), uuid.UUID(str(workeasy360_id)), subject)
+
+
+def hold_lock(subject=None):
+    """Another request is asking this question right now (the connector's single-flight lock)."""
+    cache.add(f"{question_key(W360_ORG, subject)}:lock", 1, connector.LOCK_TIMEOUT)
+
+
 class CacheOutageTests(SignInTestCase):
     """A Redis outage is never a 500 and never a change of answer: the per-process copy stands in."""
 
@@ -498,7 +521,7 @@ class CacheOutageTests(SignInTestCase):
         )
 
     def dead(self):
-        return mock.patch.object(entitlement, "cache", DeadCache())
+        return dead_cache()
 
     def test_a_known_allow_keeps_serving_without_asking_again(self):
         self.assertEqual(self.api.get(READ).status_code, 200)
@@ -520,8 +543,7 @@ class CacheOutageTests(SignInTestCase):
     def test_an_old_denial_survives_an_outage_of_both_the_cache_and_the_provider(self):
         self.provider.entitlement = {"decision": "deny", "reason": "expired", "write_allowed": False}
         self.assertEqual(self.api.get(READ).status_code, 403)
-        for record in entitlement._local.values():
-            record["checked_at"] -= entitlement.DENIAL_RECHECK_SECONDS + 1
+        self.clock.advance(entitlement.DENIAL_RECHECK_SECONDS + 1)
         self.provider.entitlement_status = 503
         with self.dead():
             self.assertEqual(self.api.get(READ).status_code, 403)

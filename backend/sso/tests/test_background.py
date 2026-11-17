@@ -15,9 +15,9 @@ from decimal import Decimal
 from pathlib import Path
 from unittest import mock
 
-from django.core.cache import cache
 from django.test import SimpleTestCase, TestCase, TransactionTestCase
 from django.utils import timezone
+from workeasy360_sso import entitlements as connector
 
 from ai.models import DocumentIndex, IndexStatus
 from ai.rag.indexing import SKIPPED_FOR_ACCESS
@@ -62,7 +62,7 @@ from sales.services.recurring_invoices import generate_due_invoices
 from sales.tests.test_recurring_invoices import RecurringInvoiceTestsBase
 from sso import entitlement
 from sso.tests.linked import LinkedToWorkeasy360
-from sso.tests.test_entitlement import DeadCache
+from sso.tests.test_entitlement import dead_cache
 from sso.tests.test_sign_in import W360_ORG
 
 LOGGER = "sso.entitlement"
@@ -153,7 +153,7 @@ class BackgroundGateTests(LinkedToWorkeasy360, TestCase):
         self.assertEqual(skipped[0].reason, entitlement.REFUSED)
 
     def test_an_unexpected_failure_is_an_outage_not_an_error(self):
-        with mock.patch.object(entitlement.get_client(), "verify_entitlement", side_effect=ValueError("bad key")):
+        with mock.patch("workeasy360_sso.client_auth.authentication", side_effect=ValueError("bad key")):
             self.assertTrue(self.allowed())
 
     def test_a_refusal_of_the_client_is_re_asked_every_minute_even_for_background_work(self):
@@ -161,17 +161,16 @@ class BackgroundGateTests(LinkedToWorkeasy360, TestCase):
         with self.assertLogs(LOGGER, level="WARNING"):
             self.assertFalse(self.allowed())
         self.provider.entitlement_status = 200
-        self.age_organization_answer(entitlement.DENIAL_RECHECK_SECONDS + 1)
-        self.age_client_refusal(entitlement.DENIAL_RECHECK_SECONDS + 1)
+        self.age_client_refusal(entitlement.CLIENT_REFUSED_SECONDS + 1)
         self.assertTrue(self.allowed())  # fixed, and seen within a minute - not after 900 s
 
     def test_a_refusal_is_not_trusted_for_the_background_window(self):
         self.provider.entitlement_status = 401
         with self.assertLogs(LOGGER, level="WARNING"):
             self.assertFalse(self.allowed())
+        answer = entitlement.stored_answer(W360_ORG)
         self.assertEqual(
-            entitlement._trusted_for(cache.get(entitlement._key(W360_ORG)), entitlement.BACKGROUND_DENIAL_SECONDS),
-            entitlement.DENIAL_RECHECK_SECONDS,
+            connector.trusted_until(answer, background=True) - answer.checked_at, entitlement.CLIENT_REFUSED_SECONDS
         )
 
     def test_a_refusal_closes_background_work_for_every_organization_without_asking(self):
@@ -190,12 +189,12 @@ class BackgroundGateTests(LinkedToWorkeasy360, TestCase):
         self.deny()
         self.assertFalse(self.allowed())
         self.allow()
-        with mock.patch.object(entitlement, "cache", DeadCache()):
+        with dead_cache():
             with self.assertLogs(LOGGER, level="WARNING"):
                 self.assertFalse(self.allowed())  # the per-process copy: still denied
 
     def test_a_redis_outage_with_nothing_known_asks_the_provider(self):
-        with mock.patch.object(entitlement, "cache", DeadCache()):
+        with dead_cache():
             self.assertTrue(self.allowed())
             self.assertEqual(self.asked(), 1)
             entitlement.clear_local()
@@ -204,7 +203,7 @@ class BackgroundGateTests(LinkedToWorkeasy360, TestCase):
                 self.assertFalse(self.allowed())
 
     def test_the_gate_itself_never_raises(self):
-        with mock.patch.object(entitlement, "_ask", side_effect=RuntimeError("unexpected")):
+        with mock.patch.object(entitlement, "_check", side_effect=RuntimeError("unexpected")):
             self.assertTrue(self.allowed())
 
     def test_a_task_given_only_an_id_is_checked_too(self):
@@ -620,6 +619,7 @@ TASK_CLASSES = {
     "ai.rag.tasks.index_document_task": "A",
     "ai.rag.tasks.resume_skipped_indexing_task": "A",
     "ai.rag.tasks.purge_expired_ai_data": "C",
+    "sso.tasks.purge_workeasy360_records_task": "C",
 }
 
 _LIST_TASKS = """

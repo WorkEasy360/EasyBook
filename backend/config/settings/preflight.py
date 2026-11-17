@@ -117,7 +117,16 @@ def validate_production_settings(
 
 
 def validate_workeasy360_settings(
-    *, sso_only, issuer, client_id, redirect_uri, key_id, has_private_key, product_code, post_logout_redirect_uri=""
+    *,
+    sso_only,
+    issuer,
+    client_id,
+    redirect_uri,
+    key_id,
+    has_private_key,
+    product_code,
+    post_logout_redirect_uri="",
+    allow_insecure_http=False,
 ):
     """Workeasy360 sign-in in production (sso/).
 
@@ -127,6 +136,9 @@ def validate_workeasy360_settings(
     the issuer and redirect URI must be https (the provider itself refuses a
     non-loopback http redirect URI in production).
     """
+    if allow_insecure_http:
+        # The connector would accept an http:// issuer or redirect URI on a loopback host: development only.
+        raise RuntimeError("WORKEASY360_ALLOW_INSECURE_HTTP must be off in production.")
     if not (product_code or "").strip():
         # The sign-in refuses a token whose product_code is not this one. With none configured that check
         # has nothing to compare with - the process must not start rather than admit any product's token.

@@ -11,7 +11,9 @@ class SsoConfig(AppConfig):
         # Registered here so core never imports sso.
         from core import access
         from sso import (
+            backchannel,  # noqa: F401 - EasyBook's part of back-channel logout (a signal receiver)
             checks,  # noqa: F401 - registers the system checks
+            config,  # noqa: F401 - resets the connector's configuration when a WORKEASY360_* setting changes
             entitlement,
         )
 

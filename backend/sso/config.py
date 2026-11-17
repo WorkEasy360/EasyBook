@@ -1,22 +1,19 @@
-"""The configured Workeasy360 client, built once per process from settings."""
+"""Workeasy360 sign-in configuration, read from settings at call time (so ``override_settings`` works).
 
-from functools import lru_cache
-from pathlib import Path
+The protocol - discovery, the key set, client authentication, the authorization code flow, ID and logout
+token verification, entitlement HTTP and its cache - is the workeasy360-sso connector's. It reads its
+configuration from ``settings.WORKEASY360_SSO``, which ``sso.connector_settings`` derives from the
+``WORKEASY360_*`` settings; a change to any of them (a test's ``override_settings``) resets the connector's
+cached configuration and provider metadata.
+"""
+
+from typing import Any
 
 from django.conf import settings
-
-from sso.oidc import Workeasy360Client
-
-#: A PEM pasted into a one-line environment variable usually arrives with
-#: literal backslash-n sequences instead of newlines.
-_ESCAPED_NEWLINE = chr(92) + "n"
-
-
-def private_key_pem() -> str:
-    path = settings.WORKEASY360_PRIVATE_KEY_FILE
-    if path:
-        return Path(path).read_text(encoding="utf-8")
-    return settings.WORKEASY360_PRIVATE_KEY.replace(_ESCAPED_NEWLINE, "\n")
+from django.core.signals import setting_changed
+from django.dispatch import receiver
+from workeasy360_sso import discovery
+from workeasy360_sso.conf import SSOConfig, get_config, reset_config
 
 
 def is_configured() -> bool:
@@ -29,6 +26,10 @@ def is_configured() -> bool:
         and settings.WORKEASY360_KEY_ID
         and (settings.WORKEASY360_PRIVATE_KEY or settings.WORKEASY360_PRIVATE_KEY_FILE)
     )
+
+
+def issuer() -> str:
+    return str(settings.WORKEASY360_ISSUER)
 
 
 def password_sign_in_allowed() -> bool:
@@ -45,16 +46,14 @@ def sign_out_of_workeasy360_available() -> bool:
     return is_configured() and bool(post_logout_redirect_uri())
 
 
-@lru_cache(maxsize=1)
-def get_client() -> Workeasy360Client:
-    """One client per process, so discovery and the key set are cached
-    across requests. Tests call `get_client.cache_clear()` after changing
-    settings."""
-    return Workeasy360Client(
-        issuer=settings.WORKEASY360_ISSUER,
-        client_id=settings.WORKEASY360_CLIENT_ID,
-        redirect_uri=settings.WORKEASY360_REDIRECT_URI,
-        private_key_pem=private_key_pem(),
-        key_id=settings.WORKEASY360_KEY_ID,
-        scopes=tuple(settings.WORKEASY360_SCOPES),
-    )
+def connector() -> SSOConfig:
+    """The connector's configuration (built from the settings above, cached until one changes). Raises
+    ``workeasy360_sso.conf.ConfigurationError`` when it cannot be built (an unreadable key file, say)."""
+    return get_config()
+
+
+@receiver(setting_changed, dispatch_uid="sso.config.reset_connector")
+def _reset_connector(*, setting: str, **_: Any) -> None:
+    if setting.startswith("WORKEASY360_"):
+        reset_config()
+        discovery.reset_cache()

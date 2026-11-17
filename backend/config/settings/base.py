@@ -9,6 +9,8 @@ from pathlib import Path
 
 import environ
 
+from sso.connector_settings import ConnectorSettings
+
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
 
 env = environ.Env(
@@ -40,6 +42,10 @@ INSTALLED_APPS = [
     # Workeasy360 sign-in (OpenID Connect). Same layer as accounts: depends on
     # core/accounts/authz/audit only. See sso/CLAUDE.md.
     "sso",
+    # The shared WorkEasy360 sign-in connector sso/ is built on (vendored
+    # wheel, vendor/): the protocol, its tables and the back-channel logout
+    # receiver. Only sso/ uses it.
+    "workeasy360_sso",
     "authz",
     "audit",
     "documents",
@@ -222,6 +228,7 @@ CELERY_TASK_ROUTES = {
     "automation.tasks.recover_stalled_executions_task": {"queue": "celery"},
     "documents.tasks.recover_stalled_ocr_task": {"queue": "celery"},
     "ai.rag.tasks.resume_skipped_indexing_task": {"queue": "celery"},
+    "sso.tasks.purge_workeasy360_records_task": {"queue": "celery"},
     # Extraction and bulk retention deletes.
     "documents.tasks.run_ocr_task": {"queue": "heavy"},
     "ai.rag.tasks.purge_expired_ai_data": {"queue": "heavy"},
@@ -258,6 +265,7 @@ CELERY_TASK_ANNOTATIONS = {
     "automation.tasks.recover_stalled_executions_task": _TASK_LIMITS_SHORT,
     "documents.tasks.recover_stalled_ocr_task": _TASK_LIMITS_SHORT,
     "ai.rag.tasks.resume_skipped_indexing_task": _TASK_LIMITS_SHORT,
+    "sso.tasks.purge_workeasy360_records_task": _TASK_LIMITS_SHORT,
     "sales.tasks.generate_recurring_invoices_task": _TASK_LIMITS_LONG,
     "purchases.tasks.generate_recurring_bills_task": _TASK_LIMITS_LONG,
     "purchases.tasks.generate_recurring_expenses_task": _TASK_LIMITS_LONG,
@@ -325,6 +333,12 @@ CELERY_BEAT_SCHEDULE = {
         "task": "documents.tasks.recover_stalled_ocr_task",
         "schedule": timedelta(seconds=env.int("BEAT_OCR_RECOVERY_SECONDS", default=300)),
     },
+    # Spent sign-in flows, logout-token ids and long-ended session records of
+    # the WorkEasy360 sign-in connector (sso/tasks.py).
+    "sso-purge-workeasy360-records": {
+        "task": "sso.tasks.purge_workeasy360_records_task",
+        "schedule": timedelta(seconds=env.int("BEAT_SSO_PURGE_SECONDS", default=21600)),
+    },
 }
 
 # --- Automation (Phase 11) ---------------------------------------------------
@@ -351,7 +365,10 @@ BFF_PROXY_SECRET = env("BFF_PROXY_SECRET", default="")
 
 REST_FRAMEWORK = {
     "DEFAULT_AUTHENTICATION_CLASSES": (
-        "rest_framework_simplejwt.authentication.JWTAuthentication",
+        # SimpleJWT's JWTAuthentication, plus: a token from a Workeasy360
+        # sign-in whose session Workeasy360 has since ended (back-channel
+        # logout) is refused (sso/sessions.py).
+        "sso.sessions.Workeasy360JWTAuthentication",
     ),
     "DEFAULT_PERMISSION_CLASSES": (
         "rest_framework.permissions.IsAuthenticated",
@@ -403,13 +420,20 @@ SIMPLE_JWT = {
     "UPDATE_LAST_LOGIN": True,
     "USER_ID_FIELD": "id",
     "USER_ID_CLAIM": "user_id",
+    # SimpleJWT's refresh, which also refuses a refresh token from a
+    # Workeasy360 sign-in whose session has ended (sso/sessions.py).
+    "TOKEN_REFRESH_SERIALIZER": "sso.sessions.TokenRefreshSerializer",  # nosec B105 - a dotted path, not a secret
 }
 
 # --- Workeasy360 sign-in (sso/) -------------------------------------------
 # EasyBook is a Workeasy360 product: people sign in with their Workeasy360
 # account (OpenID Connect, authorization code + PKCE, private_key_jwt). Only
 # the issuer is configured; every endpoint comes from its discovery document.
-# docs/workeasy360-sso.md has the registration steps.
+# The protocol is the shared workeasy360-sso connector (INSTALLED_APPS
+# "workeasy360_sso", vendored wheel), which reads these same settings through
+# WORKEASY360_SSO below. docs/workeasy360-sso.md has the registration steps.
+# Production: https://accounts.workeasy360.com (WorkEasy360 Accounts), exactly,
+# no trailing slash. Changing it needs `manage.py move_workeasy360_issuer`.
 WORKEASY360_ISSUER = env("WORKEASY360_ISSUER", default="")
 WORKEASY360_CLIENT_ID = env("WORKEASY360_CLIENT_ID", default="")
 # Exactly as registered with Workeasy360: redirect URIs match by string
@@ -439,6 +463,30 @@ WORKEASY360_SSO_ONLY = env.bool("WORKEASY360_SSO_ONLY", default=True)
 # Workeasy360 exactly (its post-logout URIs), e.g.
 # https://book.workeasy360.com/login. Empty: only EasyBook's own sign-out.
 WORKEASY360_POST_LOGOUT_REDIRECT_URI = env("WORKEASY360_POST_LOGOUT_REDIRECT_URI", default="")
+# OpenID Connect Back-Channel Logout: Workeasy360 POSTs a logout token to
+# /api/v1/auth/workeasy360/backchannel-logout/ (registered as the integration's
+# back-channel logout URI) when a sign-in ends there, and EasyBook ends the
+# sessions it opened. Off: that route answers 404.
+WORKEASY360_BACKCHANNEL_LOGOUT = env.bool("WORKEASY360_BACKCHANNEL_LOGOUT", default=True)
+# Local development only: lets the connector use an http:// issuer and
+# redirect URI on a loopback host. dev.py turns it on; production refuses it.
+WORKEASY360_ALLOW_INSECURE_HTTP = env.bool("WORKEASY360_ALLOW_INSECURE_HTTP", default=False)
+
+# The connector's configuration, derived from the WORKEASY360_* settings above
+# each time it is (re)loaded (sso/connector_settings.py).
+WORKEASY360_SSO = ConnectorSettings()
+
+SILENCED_SYSTEM_CHECKS = [
+    # "The redirect URI's path is not the connector's callback route": EasyBook's
+    # registered redirect URI is the BFF route /api/auth/callback/workeasy360,
+    # which relays to Django's own callback view. sso.E002 checks that path.
+    "workeasy360_sso.E005",
+    # "SSOMiddleware is not installed": EasyBook gates requests itself
+    # (core.access, sso/entitlement.py) and keeps no Django session for a
+    # signed-in person (the BFF holds the token pair), so it installs neither
+    # connector middleware.
+    "workeasy360_sso.W003",
+]
 
 # --- CORS ---------------------------------------------------------------
 
@@ -469,6 +517,11 @@ LOGGING = {
     "root": {"handlers": ["console"], "level": env("LOG_LEVEL", default="INFO")},
     "loggers": {
         "django": {"handlers": ["console"], "level": env("LOG_LEVEL", default="INFO"), "propagate": False},
+        # The WorkEasy360 sign-in connector's HTTP client logs one INFO line per request (discovery, the key
+        # set, every entitlement question). sso/ already logs what matters about those in its own words
+        # (sso.entitlement_*, sso.callback_refused); a failure still reaches WARNING.
+        "httpx": {"level": "WARNING"},
+        "httpcore": {"level": "WARNING"},
     },
 }
 
