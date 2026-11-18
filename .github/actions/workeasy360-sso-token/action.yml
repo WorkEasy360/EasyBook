@@ -1,0 +1,64 @@
+name: WorkEasy360 sign-in connector, short-lived token
+description: >-
+  Mints a GitHub App installation token that can do one thing: read the private repository
+  WorkEasy360/workeasy360-sso (Contents read-only, that repository only, valid one hour at most).
+  backend/requirements.txt names the connector by its SSH URL; the job's install step (or image
+  build) rewrites that one URL to HTTPS with this token through git's environment configuration.
+  The App ID is the repository variable WORKEASY360_SSO_APP_ID and its private key the Actions
+  secret WORKEASY360_SSO_APP_PRIVATE_KEY (docs/workeasy360-sso.md, "Installing the connector").
+  The token is masked in every log. It is not revoked at the end of the job: the job revokes it
+  itself, right after its one use ("Revoke the connector token").
+
+inputs:
+  app-id:
+    description: The GitHub App's ID, from vars.WORKEASY360_SSO_APP_ID.
+    required: true
+  private-key:
+    description: The GitHub App's private key (the whole .pem), from secrets.WORKEASY360_SSO_APP_PRIVATE_KEY.
+    required: true
+
+outputs:
+  token:
+    description: The installation token (masked).
+    value: ${{ steps.mint.outputs.token }}
+
+runs:
+  using: composite
+  steps:
+    # Fails in seconds, naming what is missing, rather than deep inside pip or docker build.
+    - name: The GitHub App is configured
+      shell: bash
+      env:
+        APP_ID: ${{ inputs.app-id }}
+        APP_KEY: ${{ inputs.private-key }}
+      run: |
+        set -euo pipefail
+        missing=0
+        if [ -z "${APP_ID//[[:space:]]/}" ]; then
+          echo "::error title=Missing repository variable WORKEASY360_SSO_APP_ID::The repository variable WORKEASY360_SSO_APP_ID is not set (Settings, Secrets and variables, Actions, Variables). It must hold the ID of the GitHub App that may read WorkEasy360/workeasy360-sso, the private repository backend/requirements.txt installs the sign-in connector from. See docs/workeasy360-sso.md, 'Installing the connector'."
+          missing=1
+        fi
+        if [ -z "${APP_KEY//[[:space:]]/}" ]; then
+          echo "::error title=Missing secret WORKEASY360_SSO_APP_PRIVATE_KEY::The Actions secret WORKEASY360_SSO_APP_PRIVATE_KEY is not set, or not available to this run (pull requests from forks get no secrets). It must hold a private key (the whole .pem file) of the GitHub App named by WORKEASY360_SSO_APP_ID. See docs/workeasy360-sso.md, 'Installing the connector'."
+          missing=1
+        fi
+        exit "$missing"
+
+    - name: Mint the token (Contents read-only, workeasy360-sso only)
+      id: mint
+      uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349  # v2.2.2
+      with:
+        app-id: ${{ inputs.app-id }}
+        private-key: ${{ inputs.private-key }}
+        owner: WorkEasy360
+        repositories: workeasy360-sso
+        permission-contents: read
+        # The job revokes it right after use; a second revocation at the end of the job would fail.
+        skip-token-revoke: 'true'
+
+    - name: Explain a failed token
+      if: failure() && steps.mint.outcome == 'failure'
+      shell: bash
+      run: |
+        echo "::error title=No token for WorkEasy360/workeasy360-sso::The GitHub App could not create a token for WorkEasy360/workeasy360-sso (its message is above). Check that WORKEASY360_SSO_APP_ID is that App's ID; that WORKEASY360_SSO_APP_PRIVATE_KEY is a private key generated for that same App (the whole .pem file, not revoked); and that the App has the repository permission Contents: Read-only and is installed on the WorkEasy360 account with access to the repository workeasy360-sso. See docs/workeasy360-sso.md, 'Installing the connector'."
+        exit 1

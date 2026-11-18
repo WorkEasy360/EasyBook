@@ -1,7 +1,8 @@
 # github.com's SSH host keys, the only ones trusted when the private WorkEasy360 sign-in connector
-# is fetched over SSH (requirements.txt): the Dockerfile's builder stage and backend CI
-# (.github/actions/workeasy360-sso-ssh) use this file as their only known_hosts, with
-# StrictHostKeyChecking=yes, so a host that does not hold one of these keys is refused.
+# is fetched over SSH (requirements.txt) inside an image build: the Dockerfile's builder stage uses
+# this file as its only known_hosts on the developer path (`docker build --ssh default`), with
+# StrictHostKeyChecking=yes, so a host that does not hold one of these keys is refused. (CI fetches
+# the connector over HTTPS with a GitHub App token instead: docs/workeasy360-sso.md.)
 #
 # From GitHub's own publications, cross-checked 2026-11-18: the keys are those of
 # https://api.github.com/meta ("ssh_keys"), and their fingerprints (ssh-keygen -lf github_known_hosts)

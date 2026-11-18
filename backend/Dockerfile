@@ -18,9 +18,9 @@ FROM ${PYTHON_IMAGE} AS builder
 ENV PIP_NO_CACHE_DIR=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1
 
-# git and an SSH client fetch the private WorkEasy360 sign-in connector
-# (requirements.txt). Builder stage only: the runtime stage below copies
-# /opt/venv from here and nothing else, so neither ships.
+# git (and an SSH client, for developer builds) fetch the private WorkEasy360
+# sign-in connector (requirements.txt). Builder stage only: the runtime stage
+# below copies /opt/venv from here and nothing else, so neither ships.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends git openssh-client \
     && rm -rf /var/lib/apt/lists/*
@@ -32,23 +32,45 @@ WORKDIR /build
 # or the tools that scan for one (backend/CLAUDE.md "QUALITY GATE").
 # requirements-build.txt pins (by hash) the build backend pip builds the
 # connector's wheel with; github_known_hosts holds github.com's published SSH
-# host keys, the only ones trusted below.
+# host keys, the only ones trusted on the SSH path below.
 COPY requirements.txt requirements-build.txt github_known_hosts ./
 RUN python -m venv /opt/venv \
     && /opt/venv/bin/pip install --upgrade pip setuptools wheel
-# The connector comes from its private GitHub repository over SSH, pinned to
-# a commit (requirements.txt). Build with `docker build --ssh default` (CI:
-# the read-only deploy key WORKEASY360_SSO_DEPLOY_KEY in an ssh-agent; a
-# developer: their own agent). BuildKit mounts the agent's socket for this one
-# RUN only, so no key, token or .git reaches any layer: pip clones into a
+# The connector comes from its private GitHub repository, pinned to a commit;
+# requirements.txt names it by its SSH URL. This one RUN gets read access to
+# it, one of two ways, and no other step does:
+#  - CI: a GitHub App installation token (Contents read-only on
+#    workeasy360-sso alone, valid an hour at most, revoked right after the
+#    build) as the BuildKit secret workeasy360_sso_token:
+#      docker build --secret id=workeasy360_sso_token,env=WORKEASY360_SSO_TOKEN .
+#    git's environment configuration (GIT_CONFIG_*, this RUN's environment
+#    only: no file) rewrites the connector's SSH URL, and no other, to HTTPS
+#    with the token, and empties credential.helper so git stores it nowhere.
+#  - A developer: their own SSH key, through their agent:
+#      docker build --ssh default .
+#    trusting github.com's published host keys only (github_known_hosts).
+# BuildKit mounts the secret (a tmpfs file) and the agent's socket into this
+# RUN alone, so no token, key or .git reaches any layer: pip clones into a
 # temporary directory and deletes it, and PIP_NO_CACHE_DIR keeps no built
-# wheel. required=true: without --ssh the build stops here, saying so.
+# wheel. With neither, the build stops here, saying what to pass.
 # --no-deps: requirements.txt pins the whole tree, so nothing unpinned is ever
 # installed, and `pip check` proves the pinned tree complete.
-RUN --mount=type=ssh,required=true \
-    GIT_SSH_COMMAND="ssh -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=/build/github_known_hosts -o GlobalKnownHostsFile=/dev/null" \
-    /opt/venv/bin/pip install --no-deps --build-constraint requirements-build.txt -r requirements.txt \
-    && /opt/venv/bin/pip check
+RUN --mount=type=secret,id=workeasy360_sso_token \
+    --mount=type=ssh \
+    set -eu; \
+    if [ -s /run/secrets/workeasy360_sso_token ]; then \
+        export GIT_CONFIG_COUNT=2 \
+            GIT_CONFIG_KEY_0=credential.helper GIT_CONFIG_VALUE_0= \
+            GIT_CONFIG_KEY_1="url.https://x-access-token:$(cat /run/secrets/workeasy360_sso_token)@github.com/WorkEasy360/workeasy360-sso.git.insteadOf" \
+            GIT_CONFIG_VALUE_1=ssh://git@github.com/WorkEasy360/workeasy360-sso.git; \
+    elif [ -S "${SSH_AUTH_SOCK:-}" ]; then \
+        export GIT_SSH_COMMAND="ssh -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=/build/github_known_hosts -o GlobalKnownHostsFile=/dev/null"; \
+    else \
+        echo "No access to the private WorkEasy360 sign-in connector (WorkEasy360/workeasy360-sso). Build with your own SSH key, 'docker build --ssh default .', or with a token that can read it, 'docker build --secret id=workeasy360_sso_token,env=WORKEASY360_SSO_TOKEN .' (docs/workeasy360-sso.md, 'Installing the connector')." >&2; \
+        exit 1; \
+    fi; \
+    GIT_TERMINAL_PROMPT=0 /opt/venv/bin/pip install --no-deps --build-constraint requirements-build.txt -r requirements.txt; \
+    /opt/venv/bin/pip check
 
 FROM ${PYTHON_IMAGE} AS runtime
 

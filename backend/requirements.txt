@@ -48,9 +48,10 @@ wcwidth==0.8.3
 # The shared WorkEasy360 sign-in connector (Django app workeasy360_sso, docs/workeasy360-sso.md).
 # PRIVATE: its repository, WorkEasy360/workeasy360-sso, is private and this one is public, so none of
 # its code may be committed here (no vendored wheel), and its name must never be resolved from an
-# index (it is not on PyPI). Installed from git over SSH, pinned to the full commit SHA of its tag
-# v0.3.1 (a tag can be moved; a commit cannot), which needs read access to that repository: CI and
-# the image build use a read-only deploy key (Actions secret WORKEASY360_SSO_DEPLOY_KEY), a developer
-# their own GitHub SSH key. Install with --no-deps and --build-constraint requirements-build.txt:
+# index (it is not on PyPI). Installed from git, pinned to the full commit SHA of its tag v0.3.1 (a
+# tag can be moved; a commit cannot), which needs read access to that repository: a developer uses
+# their own GitHub SSH key (this URL as written); CI and its image builds use a short-lived GitHub
+# App installation token, read-only on that one repository, and rewrite this URL to HTTPS with it
+# for the install command only. Install with --no-deps and --build-constraint requirements-build.txt:
 # the exact command, and why, is in docs/workeasy360-sso.md ("Installing the connector").
 workeasy360-sso @ git+ssh://git@github.com/WorkEasy360/workeasy360-sso.git@a98552f8f37e1e4f1fab1de99cc5b915cb9ed5c1

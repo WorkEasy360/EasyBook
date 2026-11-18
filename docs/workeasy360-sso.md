@@ -86,7 +86,7 @@ The backend needs the connector installed from its private repository first (`ma
 workeasy360-sso @ git+ssh://git@github.com/WorkEasy360/workeasy360-sso.git@a98552f8f37e1e4f1fab1de99cc5b915cb9ed5c1
 ```
 
-That commit is the connector's tag `v0.3.1`. The pin is the full commit SHA, never the tag: a tag can be moved, a commit cannot, and CI refuses any other form (`backend-ci.yml`, "The connector is pinned to a full commit SHA"). Installing it needs read access to that repository, over SSH.
+That commit is the connector's tag `v0.3.1`. The pin is the full commit SHA, never the tag: a tag can be moved, a commit cannot, and CI refuses any other form (`backend-ci.yml`, "The connector is pinned to a full commit SHA"). Installing it needs read access to that repository: on a developer's machine their own SSH key, which is why the line is an SSH URL; in CI a short-lived GitHub App token (below), with which CI rewrites that one URL to HTTPS for the install command alone.
 
 **On your machine** (you need read access to WorkEasy360/workeasy360-sso; the owner grants it):
 
@@ -101,20 +101,48 @@ That commit is the connector's tag `v0.3.1`. The pin is the full commit SHA, nev
 
 Without access everything else installs and the connector does not, so Django does not start (`workeasy360_sso` is in `INSTALLED_APPS`). That is deliberate: there is no public copy to fall back to.
 
-**The image.** From `backend/`: `docker build --ssh default -t easybook-backend .`, with an SSH agent that holds a key with access (`--ssh default` forwards the agent named by `SSH_AUTH_SOCK`; `--ssh default=<path to an unencrypted private key>` passes a key file instead). BuildKit mounts the agent's socket into the one `RUN` that installs the connector, and nowhere else: no key, token or `.git` reaches any layer, and git and the SSH client exist only in the builder stage. Without `--ssh` the build stops at that step. The built image does contain the connector's code (`/opt/venv/.../workeasy360_sso`), as it must to run: keep the image in a private registry (ECR), never a public one.
+**The image.** The Dockerfile's one `RUN` that installs the connector takes read access one of two ways, and no other step gets it:
 
-**CI** (`.github/workflows/backend-ci.yml`). The `test`, `container` and `publish` jobs need the Actions secret **`WORKEASY360_SSO_DEPLOY_KEY`**: the private half of a **read-only deploy key** of WorkEasy360/workeasy360-sso. The local action `.github/actions/workeasy360-sso-ssh` loads it into an ssh-agent from the environment (it is never written to disk), trusts only github.com's published host keys (`backend/github_known_hosts`, `StrictHostKeyChecking=yes`), checks that the key can read the repository, and stops with an error naming the secret when it is missing or unusable. The key is unloaded as soon as the install (or the image build) is done, before any third-party action runs. The test job keeps no pip cache: pip caches the wheel it builds from the pinned commit, and the Actions cache of a public repository can be restored by a pull request from a fork. Pull requests from forks get no secrets at all, so their backend tests stop at that step (the `static` job still runs).
+- With your own SSH key, from `backend/`: `docker build --ssh default -t easybook-backend .`, with an SSH agent that holds a key with access (`--ssh default` forwards the agent named by `SSH_AUTH_SOCK`; `--ssh default=<path to an unencrypted private key>` passes a key file instead). Only github.com's published host keys are trusted (`backend/github_known_hosts`, `StrictHostKeyChecking=yes`).
+- With a token, as CI does: `docker build --secret id=workeasy360_sso_token,env=WORKEASY360_SSO_TOKEN -t easybook-backend .`, with `WORKEASY360_SSO_TOKEN` holding a token that can read the connector repository. Locally that can be your GitHub CLI's (bash: `WORKEASY360_SSO_TOKEN="$(gh auth token)" docker build --secret ...`; PowerShell: `$env:WORKEASY360_SSO_TOKEN = gh auth token`, build, then `Remove-Item Env:WORKEASY360_SSO_TOKEN`). Inside that `RUN`, git's environment configuration (`GIT_CONFIG_COUNT`, `GIT_CONFIG_KEY_n`, `GIT_CONFIG_VALUE_n`) rewrites the connector's SSH URL, and no other, to `https://x-access-token:<token>@github.com/WorkEasy360/workeasy360-sso.git` and empties `credential.helper`, so git stores the token nowhere. Never pass it as a `--build-arg`: build arguments are recorded in the image.
 
-To create the key and the secret (the owner, once; never commit either half):
+BuildKit mounts the secret (a tmpfs file) and the agent's socket into that one `RUN` and nowhere else: no token, key or `.git` reaches any layer, and git and the SSH client exist only in the builder stage (checked 2026-11-18 by building with a token and scanning every layer of the image and of its builder stage). With neither, the build stops at that step, saying what to pass. The built image does contain the connector's code (`/opt/venv/.../workeasy360_sso`), as it must to run: keep it in a private registry, never a public one. EasyBook's only registry is Amazon ECR: `publish` pushes to the `aws_ecr_repository` resources in `infrastructure/terraform/ecr.tf`, which are private repositories (ECR Public would be `aws_ecrpublic_repository`), with no repository policy, so only IAM principals of that AWS account with ECR permissions can pull; the release role CI assumes through OIDC can only push. Never push this image to Docker Hub, a public GHCR package or ECR Public.
+
+**CI** (`.github/workflows/backend-ci.yml`). No long-lived key or token. The `test`, `container` and `publish` jobs each start by minting a **GitHub App installation token** with `actions/create-github-app-token` (pinned by commit, v2.2.2), through the local action `.github/actions/workeasy360-sso-token`: owner `WorkEasy360`, repository `workeasy360-sso` only, permission `contents: read` only, valid one hour at most, masked in every log. It reads the repository variable **`WORKEASY360_SSO_APP_ID`** and the Actions secret **`WORKEASY360_SSO_APP_PRIVATE_KEY`**, and stops at once with an error naming whichever is missing (or, when GitHub refuses the token, saying what to check). `test` uses the token for its one install command: the same environment-only rewrite as the image (`GIT_CONFIG_*` set on that pip command alone: no file on disk, no global configuration, no credential helper). `container` and `publish` pass it to `docker build` as the BuildKit secret above. Each job revokes the token as soon as the install or build is done, before any third-party action runs, and the container smoke test fails on any `.git`, `.ssh` or git credential file, git or SSH binary, or GitHub token in the image. The test job keeps no pip cache: pip caches the wheel it builds from the pinned commit, and the Actions cache of a public repository can be restored by a pull request from a fork. Pull requests from forks get no secrets at all, so their backend tests stop at that first step (the `static` job still runs).
+
+One GitHub App serves every WorkEasy360 product that installs the connector (Easy CRM uses the same variable and secret names): it can only read `workeasy360-sso`, whichever repository's workflow mints the token.
+
+**Creating the GitHub App** (the owner, once, signed in to GitHub as WorkEasy360):
+
+1. Open https://github.com/settings/apps/new (your profile picture, Settings, Developer settings, GitHub Apps, New GitHub App).
+2. GitHub App name: any unused name, for example `WorkEasy360 connector reader`. Homepage URL: `https://github.com/WorkEasy360/workeasy360-sso`. Leave "Identifying and authorizing users" and "Post installation" empty.
+3. Webhook: clear **Active** (the App receives no events).
+4. Permissions, Repository permissions: **Contents: Read-only**. Leave every other permission at "No access" (GitHub adds Metadata: Read-only itself). No organization or account permissions.
+5. Where can this GitHub App be installed: **Only on this account**.
+6. **Create GitHub App**. On the App's page, note its **App ID** (a number, under "About").
+7. Private keys: **Generate a private key**. The browser downloads a `.pem` file: the App's private key.
+8. Install App (left-hand menu): **Install** next to WorkEasy360, choose **Only select repositories**, pick **`workeasy360-sso`** and nothing else, **Install**.
+
+**Storing the values**, from the folder holding the downloaded `.pem` (replace `<App ID>` and the file name):
 
 ```
-ssh-keygen -t ed25519 -N "" -C "EasyBook CI, read-only" -f easybook-ci-workeasy360-sso
-gh repo deploy-key add easybook-ci-workeasy360-sso.pub -R WorkEasy360/workeasy360-sso --title "EasyBook CI (read-only)"
-gh secret set WORKEASY360_SSO_DEPLOY_KEY -R WorkEasy360/EasyBook < easybook-ci-workeasy360-sso
-rm easybook-ci-workeasy360-sso easybook-ci-workeasy360-sso.pub
+gh variable set WORKEASY360_SSO_APP_ID -R WorkEasy360/EasyBook --body "<App ID>"
+gh secret set WORKEASY360_SSO_APP_PRIVATE_KEY -R WorkEasy360/EasyBook < <app-name>.<date>.private-key.pem
 ```
 
-(The same in the web interface: the connector repository's Settings, Deploy keys, without "Allow write access"; then EasyBook's Settings, Secrets and variables, Actions.) If Dependabot is ever enabled, its pull requests read Dependabot secrets: add the same secret there.
+Run the same two commands for every other repository that uses this App (`-R WorkEasy360/AI-CRM` for Easy CRM) while you still have the file, then **delete the file**: `rm <app-name>.<date>.private-key.pem` (PowerShell: `Remove-Item <app-name>.<date>.private-key.pem`). GitHub keeps no copy you could download again; if the key is ever needed elsewhere, generate a new one. `gh variable list -R WorkEasy360/EasyBook` and `gh secret list -R WorkEasy360/EasyBook` then show both names (never the key). (The same in the web interface: EasyBook's Settings, Secrets and variables, Actions, the Variables and Secrets tabs.) If Dependabot is ever enabled, its pull requests read Dependabot secrets, not Actions secrets: `gh secret set WORKEASY360_SSO_APP_PRIVATE_KEY --app dependabot -R WorkEasy360/EasyBook < <file>.pem` too, before deleting the file.
+
+**Rotating the key**: in the App's settings, Generate a private key, store it with the `gh secret set` above (every repository that uses the App), delete the file, then **Delete** the old key on the same page. From then on the old key mints nothing; uninstalling the App also revokes every token it has issued.
+
+**Revoking the old deploy key.** An earlier version of this setup read the connector with a read-only deploy key (secret `WORKEASY360_SSO_DEPLOY_KEY`). If one was ever created, remove both halves:
+
+```
+gh repo deploy-key list -R WorkEasy360/workeasy360-sso
+gh repo deploy-key delete <id> -R WorkEasy360/workeasy360-sso
+gh secret delete WORKEASY360_SSO_DEPLOY_KEY -R WorkEasy360/EasyBook
+```
+
+(On 2026-11-18 the connector repository had no deploy key and EasyBook no such secret, so there was nothing to revoke; check again before relying on that.)
 
 **Integrity, with no wheel committed.**
 
