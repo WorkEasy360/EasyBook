@@ -33,7 +33,9 @@ WORKDIR /app
 # backend/Dockerfile: the base image can lag behind Debian security updates).
 RUN apt-get update \
     && apt-get upgrade -y \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* \
+    && rm -rf /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/corepack \
+    /usr/local/bin/npm /usr/local/bin/npx /usr/local/bin/corepack
 
 ENV NODE_ENV=production \
     NEXT_TELEMETRY_DISABLED=1 \
