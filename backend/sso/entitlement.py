@@ -32,8 +32,8 @@ this module decides *what* EasyBook asks and what it does with the answer:
 - With ``WORKEASY360_SSO_ONLY`` on, a user with no ``ExternalIdentity`` (a session opened before SSO-only was
   switched on) is refused (``workeasy360_sign_in_required``) in an organization linked to Workeasy360: there
   is no subject to check per person, so the session could otherwise outlive the person's removal in
-  Workeasy360 for as long as its refresh token keeps rotating. They sign in with Workeasy360, which links the
-  account by verified e-mail. With SSO-only off (development) the organization is asked, as before.
+  Workeasy360 for as long as its refresh token keeps rotating. They sign in with Workeasy360, once the account
+  is linked (``manage.py link_workeasy360_user``, or ``WORKEASY360_LINK_BY_VERIFIED_EMAIL``). With SSO-only off (development) the organization is asked, as before.
 - A known denial never lapses into access: it is kept without expiry, and every process also keeps its
   own copy of the last answers, so a cache outage or eviction cannot hand access back. A first check is
   never waved through because another request happens to be asking.

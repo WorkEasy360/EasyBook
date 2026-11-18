@@ -23,7 +23,7 @@ from accounts.models import Membership, Organization, User
 from audit.models import AuditLog
 from authz.roles import Role
 from core.tenancy import tenant_context
-from core.tests.factories import make_org_with_owner, make_user
+from core.tests.factories import make_membership, make_org_with_owner, make_organization, make_user
 from sso import checks, entitlement
 from sso.flow import FLOW_MAX_AGE_SECONDS
 from sso.models import ExternalIdentity
@@ -252,28 +252,158 @@ class SessionRecordTests(SignInTestCase):
         self.assertEqual(ExternalIdentity.objects.get().user_id, user.id)
 
 
-class LinkingTests(SignInTestCase):
-    def test_existing_account_is_linked_by_a_verified_address_and_its_password_retired(self):
-        _, owner, _ = make_org_with_owner(email="asha@example.com")
+def linked_organization(name="Legacy Books", external=W360_ORG, email="asha@example.com"):
+    """An EasyBook organization linked to Workeasy360 organization ``external``, owned by an existing (password)
+    account with ``email``. Returns (organization, owner)."""
+    organization, owner, _ = make_org_with_owner(org_name=name, email=email)
+    if external:
+        Organization.objects.filter(id=organization.id).update(workeasy360_organization_id=external)
+    return organization, owner
+
+
+def link_audit(organization):
+    with tenant_context(organization_id=organization.id):
+        return list(AuditLog.objects.filter(object_type="external_identity"))
+
+
+class ExistingAccountRefusedByDefaultTests(SignInTestCase):
+    """An existing EasyBook account is never merged with a new Workeasy360 account because the addresses match
+    (WORKEASY360_LINK_BY_VERIFIED_EMAIL is off by default): an operator links them (link_workeasy360_user)."""
+
+    def test_the_default_is_off(self):
+        self.assertFalse(settings.WORKEASY360_LINK_BY_VERIFIED_EMAIL)
+
+    def test_a_verified_address_match_in_the_same_organization_is_refused_not_merged(self):
+        organization, owner = linked_organization()
+        old_refresh = RefreshToken.for_user(owner)
+        response = self.sign_in(email="Asha@Example.com")
+        self.assertEqual(response.status_code, 403, response.content)
+        self.assertEqual(response.data["error"]["code"], "account_conflict")
+        self.assertFalse(ExternalIdentity.objects.exists())
+        self.assertFalse(FederatedIdentity.objects.exists())
+        self.assertFalse(ProductSession.objects.exists())
+        self.assertEqual(User.objects.count(), 1)
+        owner.refresh_from_db()
+        self.assertTrue(owner.has_usable_password())
+        self.assertEqual(self.client.post("/api/v1/auth/refresh/", {"refresh": str(old_refresh)}).status_code, 200)
+        self.assertEqual(link_audit(organization), [])
+
+    def test_a_match_in_an_easybook_only_organization_creates_nothing(self):
+        linked_organization(external=None)
+        response = self.sign_in()
+        self.assertEqual(response.data["error"]["code"], "account_conflict")
+        self.assertFalse(Organization.objects.filter(workeasy360_organization_id=W360_ORG).exists())
+        self.assertEqual(User.objects.count(), 1)
+
+    def test_after_the_operator_links_the_account_the_person_signs_in_to_it(self):
+        organization, owner = linked_organization()
+        call_command(
+            "link_workeasy360_user", "asha@example.com", subject="w360-user-1", organization=W360_ORG,
+            actor="ops: Priya", reason="ticket 42", stdout=io.StringIO(),
+        )
+        response = self.sign_in(email="asha.renamed@example.com")
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertEqual(AccessToken(response.data["access"])["user_id"], str(owner.id))
+        self.assertEqual(response.data["organization_id"], str(organization.id))
+        self.assertEqual(User.objects.count(), 1)
+        owner.refresh_from_db()
+        self.assertTrue(owner.has_usable_password())  # left as it is; SSO-only retires password sign-in
+        self.assertEqual(FederatedIdentity.objects.get().user_id, owner.id)
+        # The operator's record only: the sign-in found the link on (issuer, sub), it made none.
+        self.assertEqual([entry.changes["link"] for entry in link_audit(organization)], ["operator"])
+
+
+@override_settings(WORKEASY360_LINK_BY_VERIFIED_EMAIL=True)
+class AutomaticLinkByVerifiedEmailTests(SignInTestCase):
+    """WORKEASY360_LINK_BY_VERIFIED_EMAIL on: a verified address links an account of the signing-in organization
+    only, never across organizations, never an account already linked, always audited."""
+
+    def test_an_account_of_this_organization_alone_is_linked_and_audited_and_keeps_its_password(self):
+        organization, owner = linked_organization()
         old_refresh = RefreshToken.for_user(owner)  # a session the password opened earlier
         response = self.sign_in(email="Asha@Example.com")
         self.assertEqual(response.status_code, 200, response.content)
         self.assertEqual(AccessToken(response.data["access"])["user_id"], str(owner.id))
-        self.assertTrue(ExternalIdentity.objects.filter(user=owner).exists())
+        self.assertEqual(response.data["organization_id"], str(organization.id))
+        self.assertTrue(ExternalIdentity.objects.filter(user=owner, issuer=ISSUER, subject="w360-user-1").exists())
         self.assertTrue(FederatedIdentity.objects.filter(user=owner).exists())
         owner.refresh_from_db()
-        # EasyBook never verified the address, so the password may belong to
-        # someone who pre-registered it: it goes, with every session it opened.
-        self.assertFalse(owner.has_usable_password())
-        refreshed = self.client.post("/api/v1/auth/refresh/", {"refresh": str(old_refresh)})
-        self.assertEqual(refreshed.status_code, 401)
-        # The session the sign-in itself issued still works.
+        self.assertTrue(owner.has_usable_password())  # left as it is; SSO-only retires password sign-in
+        # Sessions opened before the link end; the one the sign-in issued works.
+        self.assertEqual(self.client.post("/api/v1/auth/refresh/", {"refresh": str(old_refresh)}).status_code, 401)
         self.assertEqual(
             self.client.post("/api/v1/auth/refresh/", {"refresh": response.data["refresh"]}).status_code, 200
         )
-        organization = Organization.objects.get(workeasy360_organization_id=W360_ORG)
-        with tenant_context(organization_id=organization.id):
-            self.assertTrue(AuditLog.objects.filter(object_type="external_identity", object_id=str(owner.id)).exists())
+        [entry] = link_audit(organization)
+        self.assertEqual(entry.actor_id, owner.id)
+        self.assertEqual(entry.object_id, str(owner.id))
+        self.assertEqual(entry.changes["link"], "automatic_verified_email")
+        self.assertEqual(entry.changes["workeasy360_subject"], "w360-user-1")
+        self.assertEqual(entry.changes["workeasy360_organization_id"], W360_ORG)
+        self.assertEqual(entry.changes["issuer"], ISSUER)
+        self.assertTrue(entry.changes["password_kept"])
+
+    def test_an_unverified_address_still_never_links(self):
+        _, owner = linked_organization()
+        response = self.sign_in(email_verified=False)
+        self.assertEqual(response.data["error"]["code"], "email_unverified")
+        self.assertFalse(ExternalIdentity.objects.filter(user=owner).exists())
+
+    def test_an_account_of_another_organization_only_is_never_linked(self):
+        # The signing-in organization is linked here, but the account belongs to a different one.
+        linked_organization(name="Theirs", external=W360_ORG, email="owner@example.com")
+        other, asha = linked_organization(name="Elsewhere", external="0d6c0a3e-8e52-4a63-8b0e-5a1d2c3b4f50")
+        response = self.sign_in()
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(response.data["error"]["code"], "account_conflict")
+        self.assertFalse(ExternalIdentity.objects.exists())
+        self.assertEqual(link_audit(other), [])
+        with tenant_context(user_id=asha.id):
+            self.assertEqual(Membership.all_objects.filter(user=asha).count(), 1)
+
+    def test_an_account_of_an_easybook_only_organization_is_never_linked(self):
+        # The global lookup used to link this one, and the new Workeasy360 organization then opened it.
+        _, owner = linked_organization(external=None)
+        response = self.sign_in()
+        self.assertEqual(response.data["error"]["code"], "account_conflict")
+        self.assertFalse(ExternalIdentity.objects.filter(user=owner).exists())
+        self.assertFalse(Organization.objects.filter(workeasy360_organization_id=W360_ORG).exists())
+
+    def test_an_account_of_this_organization_and_another_is_never_linked(self):
+        organization, owner = linked_organization()
+        side = make_organization(name="Side Books")
+        make_membership(side, owner)
+        response = self.sign_in()
+        self.assertEqual(response.data["error"]["code"], "account_conflict")
+        self.assertFalse(ExternalIdentity.objects.filter(user=owner).exists())
+        self.assertEqual(link_audit(organization), [])
+
+    def test_a_removed_member_of_this_organization_is_never_linked(self):
+        organization, owner = linked_organization()
+        with tenant_context(user_id=owner.id):
+            Membership.all_objects.filter(user=owner, organization=organization).update(is_active=False)
+        self.assertEqual(self.sign_in().data["error"]["code"], "account_conflict")
+        self.assertFalse(ExternalIdentity.objects.filter(user=owner).exists())
+
+    def test_an_account_already_linked_is_never_relinked(self):
+        organization, _owner = linked_organization()
+        self.assertEqual(self.sign_in().status_code, 200)
+        response = self.sign_in(sub="w360-impostor")  # same verified address, different subject
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(response.data["error"]["code"], "account_conflict")
+        self.assertFalse(ExternalIdentity.objects.filter(subject="w360-impostor").exists())
+        self.assertFalse(FederatedIdentity.objects.filter(subject="w360-impostor").exists())
+        self.assertEqual(len(link_audit(organization)), 1)
+
+    def test_an_account_linked_under_another_issuer_is_never_relinked(self):
+        _, owner = linked_organization()
+        ExternalIdentity.objects.create(user=owner, issuer="https://app.workeasy360.test", subject="w360-old")
+        response = self.sign_in()
+        self.assertEqual(response.data["error"]["code"], "account_conflict")
+        self.assertFalse(ExternalIdentity.objects.filter(issuer=ISSUER).exists())
+
+
+class LinkingTests(SignInTestCase):
 
     def test_an_unverified_address_never_takes_over_an_account(self):
         owner = make_user(email="asha@example.com")

@@ -18,6 +18,17 @@ the BFF).
 connector's own ``FederatedIdentity``, which its back-channel session records
 point at, is kept a mirror of it on every sign-in (and was back-filled by
 migration ``sso.0002``).
+
+An existing EasyBook account is never merged with a Workeasy360 account because
+the addresses match. By default a new Workeasy360 account whose address an
+EasyBook user already has is refused (``account_conflict``): an operator links
+the two with ``manage.py link_workeasy360_user``, which is audited.
+``WORKEASY360_LINK_BY_VERIFIED_EMAIL`` (off by default) allows an automatic link
+instead, only for an address Workeasy360 verified, only for an account that
+belongs to the signing-in organization and to no other, and never for an account
+already linked; every such link is audited. Linking leaves the password as it is
+(SSO-only mode is what retires password sign-in) and revokes the refresh tokens
+issued before the link.
 """
 
 from dataclasses import dataclass
@@ -37,6 +48,7 @@ from audit.services import record
 from authz.roles import Role
 from core.tenancy import tenant_context
 from sso import entitlement
+from sso.config import issuer as configured_issuer
 from sso.models import ExternalIdentity
 
 #: Shown until the owner renames it, when the token carries no
@@ -48,6 +60,11 @@ FALLBACK_ORGANIZATION_NAME = "My organization"
 #: the connector, sso/flow.py): whether this sign-in linked an existing account.
 _LINKED = "easybook_linked"
 
+#: ``changes["link"]`` of the audit record of a link: made by a sign-in (WORKEASY360_LINK_BY_VERIFIED_EMAIL), or
+#: by an operator (manage.py link_workeasy360_user).
+LINK_AUTOMATIC = "automatic_verified_email"
+LINK_OPERATOR = "operator"
+
 
 @dataclass(frozen=True)
 class SignedIn:
@@ -55,7 +72,8 @@ class SignedIn:
     organization: Organization
     membership: Membership
     organization_created: bool
-    #: This sign-in attached the Workeasy360 account to an existing EasyBook account (by verified address).
+    #: This sign-in attached the Workeasy360 account to an existing EasyBook account (by verified address, only
+    #: with ``WORKEASY360_LINK_BY_VERIFIED_EMAIL`` on).
     linked: bool
 
 
@@ -97,9 +115,16 @@ def record_sign_in(signed_in: SignedIn, claims: dict) -> None:
     user, organization = signed_in.user, signed_in.organization
     changes = {"method": "workeasy360", "workeasy360_subject": claims["sub"], "aal": claims.get("aal")}
     if signed_in.linked:
+        # The automatic link by verified address (WORKEASY360_LINK_BY_VERIFIED_EMAIL). The operator's link
+        # (manage.py link_workeasy360_user) writes its own record, with "link": "operator".
         record(
             organization_id=organization.id, action=AuditLog.Action.CREATE, object_type="external_identity",
-            object_id=user.id, actor=user, changes=changes,
+            object_id=user.id, actor=user,
+            changes={
+                **changes, "link": LINK_AUTOMATIC, "issuer": configured_issuer(),
+                "workeasy360_organization_id": str(claims["organization_id"]), "email": user.email,
+                "email_verified": True, "password_kept": user.has_usable_password(),
+            },
         )
     if signed_in.organization_created:
         record(
@@ -179,10 +204,9 @@ def _user_for(claims: dict, *, issuer: str) -> tuple[User, bool]:
     if user is not None:
         if not user.is_active:
             raise SignInRefused("account_disabled", log_reason="user_inactive")
-        if ExternalIdentity.objects.filter(issuer=issuer, user=user).exists():
-            # Already linked to a different Workeasy360 account.
-            raise SignInRefused("account_conflict", log_reason="linked_to_other_subject")
-        _retire_password(user)
+        _check_automatic_link(user, claims)
+        # Sessions the account opened before the link end; its password stays (see the module docstring).
+        revoke_refresh_tokens(user)
         linked = True
     else:
         first_name, _, last_name = str(claims.get("name") or "").strip().partition(" ")
@@ -203,16 +227,48 @@ def _user_for(claims: dict, *, issuer: str) -> tuple[User, bool]:
     return user, linked
 
 
-def _retire_password(user: User) -> None:
-    """EasyBook never verified anyone's address, so whoever chose this
-    account's password may not be the person Workeasy360 just vouched for (an
-    account pre-registered under someone else's address). From the link on,
-    the account is reached through Workeasy360 only: the password goes, and
-    every refresh token it issued is revoked."""
-    user.set_unusable_password()
-    user.save(update_fields=["password", "updated_at"])
-    for token in OutstandingToken.objects.filter(user=user):
-        BlacklistedToken.objects.get_or_create(token=token)
+def link_by_verified_email_enabled() -> bool:
+    return bool(getattr(settings, "WORKEASY360_LINK_BY_VERIFIED_EMAIL", False))
+
+
+def active_organization_ids(user: User) -> set:
+    """The EasyBook organizations ``user`` is an active member of (Membership is under RLS: the user's own rows)."""
+    with tenant_context(user_id=user.id):
+        return set(Membership.all_objects.filter(user=user, is_active=True).values_list("organization_id", flat=True))
+
+
+def has_workeasy360_identity(user: User) -> bool:
+    """``user`` is linked to a Workeasy360 account already, under any issuer (or the connector's mirror says so)."""
+    return (
+        ExternalIdentity.objects.filter(user=user).exists() or FederatedIdentity.objects.filter(user=user).exists()
+    )
+
+
+def _check_automatic_link(user: User, claims: dict) -> None:
+    """May this sign-in attach its new Workeasy360 account to ``user``, an existing EasyBook account with the same
+    (verified) address? Raises ``account_conflict`` unless every rule holds:
+
+    - ``WORKEASY360_LINK_BY_VERIFIED_EMAIL`` is on (off by default: an operator links the two instead, with
+      ``manage.py link_workeasy360_user``);
+    - ``user`` holds no Workeasy360 identity yet, under any issuer (a linked account is never re-linked);
+    - ``user`` belongs to the EasyBook organization linked to the token's ``organization_id`` (an active
+      membership), and to no other. A link opens every organization the account belongs to, so an address
+      match must never reach across tenants, including EasyBook-only organizations Workeasy360 never checks.
+
+    The caller has already required ``email_verified``."""
+    if not link_by_verified_email_enabled():
+        raise SignInRefused("account_conflict", log_reason="existing_account_link_by_operator_only")
+    if has_workeasy360_identity(user):
+        raise SignInRefused("account_conflict", log_reason="linked_to_other_subject")
+    organization = Organization.objects.filter(workeasy360_organization_id=str(claims["organization_id"])).first()
+    if organization is None:
+        raise SignInRefused("account_conflict", log_reason="organization_not_linked")
+    active = active_organization_ids(user)
+    if active != {organization.id}:
+        raise SignInRefused(
+            "account_conflict",
+            log_reason="not_a_member_here" if organization.id not in active else "member_of_other_organizations",
+        )
 
 
 def _organization_for(claims: dict) -> tuple[Organization, bool]:

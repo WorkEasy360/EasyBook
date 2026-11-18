@@ -96,9 +96,11 @@ const SSO_ERROR_MESSAGES: Record<string, string> = {
   not_entitled: "Your organization does not have EasyBook yet. Start a free trial or buy it in Workeasy360.",
   no_seat: "You do not have an EasyBook seat. Ask your Workeasy360 administrator to assign you one.",
   workeasy360_access: "Workeasy360 did not allow this sign-in for your organization. Ask your Workeasy360 administrator.",
-  email_unverified:
-    "Verify your email address in Workeasy360 first. An EasyBook account already uses it, and it can only be linked once the address is verified.",
-  account_conflict: "This EasyBook account is already linked to a different Workeasy360 account. Contact support.",
+  email_unverified: "Verify your email address in Workeasy360 first, then sign in again.",
+  // An existing EasyBook account with this address is never merged by itself: an administrator links it
+  // (backend manage.py link_workeasy360_user), or it is already linked to a different Workeasy360 account.
+  account_conflict:
+    "An EasyBook account already uses this email address and is not linked to your Workeasy360 account. Contact your EasyBook administrator to link it.",
   membership_inactive: "Your access to this organization in EasyBook was removed. Ask an owner or admin to restore it.",
   account_disabled: "This EasyBook account is disabled. Contact support.",
 };

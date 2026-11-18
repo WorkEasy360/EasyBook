@@ -454,6 +454,15 @@ WORKEASY360_DEFAULT_ROLE = env("WORKEASY360_DEFAULT_ROLE", default="staff")
 # Currency for an organization provisioned by a first sign-in (the owner can
 # change it before posting anything).
 WORKEASY360_DEFAULT_CURRENCY = env("WORKEASY360_DEFAULT_CURRENCY", default="INR")
+# An existing EasyBook account whose address a new Workeasy360 account also
+# has is never merged by default: the sign-in is refused (account_conflict)
+# and an operator links the two with `manage.py link_workeasy360_user`
+# (audited). On: such a sign-in links the account itself, only when
+# Workeasy360 verified the address, only for an account that is a member of
+# the signing-in organization and of no other, never for one already linked;
+# each link is audited. Linking never removes the password (SSO-only below is
+# what retires password sign-in). docs/workeasy360-sso.md, "Existing accounts".
+WORKEASY360_LINK_BY_VERIFIED_EMAIL = env.bool("WORKEASY360_LINK_BY_VERIFIED_EMAIL", default=False)
 # Workeasy360 is the only way in: password sign-in, self-registration and
 # creating an organization here (organizations come from Workeasy360) are all
 # refused. On by default; dev.py and test.py turn it off.

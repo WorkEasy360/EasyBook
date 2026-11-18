@@ -25,7 +25,7 @@ The OpenID Connect protocol itself is the shared **workeasy360-sso** connector (
 |---|---|
 | Known Workeasy360 account (issuer + `sub`) | Same EasyBook user |
 | Address **not** verified at Workeasy360 | Refused (`email_unverified`): it neither links an existing account nor creates one |
-| New Workeasy360 account; an EasyBook user has the same verified address | Linked to that user. EasyBook never verified addresses, so a password on that account might have been set by someone who pre-registered it. The password is therefore removed and every refresh token it issued is revoked. From then on the account is reached through Workeasy360 only |
+| New Workeasy360 account; an EasyBook user has the same address | **Refused** (`account_conflict`: "ask your EasyBook administrator to link it"). Nothing is merged and nothing is created. An operator links the two (`manage.py link_workeasy360_user`, below), or, only if `WORKEASY360_LINK_BY_VERIFIED_EMAIL` is on, the sign-in links them itself under the rules in "Existing EasyBook accounts" |
 | New verified address | New user with no usable password |
 | Workeasy360 organization not seen before | New EasyBook organization named from `organization_name`, currency `WORKEASY360_DEFAULT_CURRENCY`. The person signing in becomes **owner** and goes through fiscal-year onboarding |
 | Organization already known | Joined with `WORKEASY360_DEFAULT_ROLE` (default `staff`). Owners and admins manage roles in EasyBook |
@@ -38,6 +38,35 @@ An existing EasyBook organization whose books already live here should be attach
 ```
 manage.py link_workeasy360_organization <easybook-organization-id> <workeasy360-organization-id>
 ```
+
+## Existing EasyBook accounts: linking, never merging by address
+
+The same address does not make two accounts the same person. EasyBook never verified the addresses its own accounts registered with, and a link opens **every** organization the account belongs to, including EasyBook-only ones Workeasy360 never checks. So by default a first Workeasy360 sign-in whose address an EasyBook account already has is refused with `account_conflict`, and the person is told to ask their administrator.
+
+**The operator link** (the normal way). Once the operator has confirmed, outside EasyBook, that the Workeasy360 account and the EasyBook account are the same person:
+
+```
+manage.py link_workeasy360_user <email-or-user-id> --subject <workeasy360-sub> \
+    --organization <workeasy360-organization-id> --actor "<who>" --reason "<why, e.g. the ticket>"
+```
+
+- `--subject` is the person's WorkEasy360 account id (`sub`), from WorkEasy360 Accounts. The issuer is the configured `WORKEASY360_ISSUER`.
+- `--organization` is the Workeasy360 organization the person works in here. It must already be linked (`link_workeasy360_organization`), and the account must be an active member of it.
+- It refuses, writing nothing, if the account already holds a Workeasy360 identity (under any issuer), if that Workeasy360 account is already linked to another EasyBook account (or the connector's mirror says so), if the account is disabled, or if `--actor` or `--reason` is empty.
+- It writes `ExternalIdentity` and the connector's `FederatedIdentity` mirror, revokes the refresh tokens the account issued before the link, and records one audit entry in that organization (`object_type` `external_identity`, `changes.link` `operator`): the operator, the reason, the issuer, the `sub`, the Workeasy360 organization, the address, and the account's **other** organizations, which the link opens too (also printed). The entry's time is the audit row's `created_at`.
+- The person's next Workeasy360 sign-in lands on that account, whatever address Workeasy360 then reports.
+
+**The automatic link** (`WORKEASY360_LINK_BY_VERIFIED_EMAIL`, default **off**). On, a first sign-in links an existing account with the same address only when all of these hold; otherwise it is `account_conflict` as above:
+
+- Workeasy360 says the address is verified (`email_verified: true`; without it nothing is linked or created, `email_unverified`);
+- the account is an active member of the EasyBook organization linked to the token's `organization_id`, and of **no other** organization (never across tenants);
+- the account holds no Workeasy360 identity yet, under any issuer (a linked account is never re-linked).
+
+Each automatic link revokes the account's earlier refresh tokens and is audited in that organization (`changes.link` `automatic_verified_email`, actor = the account, with the `sub`, issuer and Workeasy360 organization).
+
+**Passwords are left as they are** by both links (the owner's rule: no authentication data is removed before the migration and linking tests pass). Password sign-in is retired by **SSO-only mode** instead: with `WORKEASY360_SSO_ONLY` on (the production default), password sign-in, registration and creating organizations here are refused (`managed_by_workeasy360`), and a session opened before SSO-only by an account with no Workeasy360 identity is refused in every organization linked to Workeasy360 (`workeasy360_sign_in_required`, below). Removing the stored password hashes is a later, separate step once linking is complete.
+
+Tests: `backend/sso/tests/test_sign_in.py` (`ExistingAccountRefusedByDefaultTests`, `AutomaticLinkByVerifiedEmailTests`), `backend/sso/tests/test_link_command.py` (`LinkWorkeasy360UserTests`).
 
 ## Registering EasyBook with Workeasy360 (once per environment)
 
@@ -66,6 +95,7 @@ manage.py link_workeasy360_organization <easybook-organization-id> <workeasy360-
 | `WORKEASY360_PRODUCT_CODE` | Optional, default `easybook`: the product code a token must name. **Must not be empty**: production refuses to start, and so does `manage.py check` in every environment (`sso.E001`), because the product binding check would otherwise have nothing to compare with. The sign-in itself also fails closed (`wrong_product`) when it is empty |
 | `THROTTLE_SSO_START` | Optional, default `60/min` per client address: the rate limit of the sign-in **start** endpoint (its own scope, `sso_start`). The callback and password sign-in keep `THROTTLE_AUTH` (`20/min`) |
 | `WORKEASY360_DEFAULT_ROLE` | Optional. Role for people joining an existing organization (default `staff`) |
+| `WORKEASY360_LINK_BY_VERIFIED_EMAIL` | Optional, default **off**: an existing EasyBook account with the same address is refused (`account_conflict`) and linked by an operator. On: linked automatically, only under the rules in "Existing EasyBook accounts" |
 | `WORKEASY360_DEFAULT_CURRENCY` | Optional. Currency of a newly provisioned organization (default `INR`) |
 | `WORKEASY360_BACKCHANNEL_LOGOUT` | Optional, default on: serves the back-channel logout receiver. Off: it answers `404` |
 | `WORKEASY360_ALLOW_INSECURE_HTTP` | Local development only (on in `dev.py`): an `http://` issuer and redirect URI on a loopback host. Production refuses to start with it |
@@ -164,7 +194,7 @@ Workeasy360 checks the trial or plan at sign-in. EasyBook's own session then liv
 - Every organization-scoped request (`core.access` gate, registered by `SsoConfig.ready` so `core` never imports `sso`) is refused with `403 workeasy360_access_ended` once the answer is `deny` - a trial that ran out, a lapsed or cancelled subscription - and every write with `workeasy360_read_only` while `write_allowed` is false. `auth/me/` and the organization list still answer, so the frontend sends every page to **/access-ended** ("EasyBook access has ended": Try again, Sign out). When the reason is the person's (`membership_inactive`, `no_seat`) the error's `details` carries `{"reason": ...}` and the page says "Your access has been removed" or "You no longer have an EasyBook seat" instead of blaming the organization (`/access-ended?reason=membership_inactive|no_seat`; an unknown reason falls back to the organization wording). A person who belongs to other organizations also gets a **Switch organization** list there (the organization list is not organization-scoped, so it still answers), which uses the same `/api/auth/organization` route as the app's switcher and lands on the dashboard with a full page load.
 - A Workeasy360 outage (5xx, 429, timeout, an unreadable key) is never a denial: the last answer stands, with none access continues, and after a failure the next attempt waits 60 s. One request asks while the others use the last answer; a first check is never waved through because another request is asking.
 - A refusal is not an outage: when Workeasy360 refuses EasyBook's own client (400/401/403 - a revoked credential, a suspended integration) every organization-scoped request is refused with `workeasy360_access_unverified` ("EasyBook can't confirm your access", `/access-ended?reason=unverified`) and it is logged as an error. A refusal is about the **client**, so it closes the whole client for 60 s, kept in the shared cache and in each process (so it survives a Redis outage): every question - any person, any organization, background work - fails closed without being asked, even if it held a fresh `allow`. After 60 s a question is asked again. Workeasy360 answers 429 once a client has failed to authenticate about ten times a minute; a 429 that arrives within 5 minutes of a refusal is that limiter and counts as a refusal (otherwise most people would never learn of a revocation); a 429 with no recent refusal is an outage as before.
-- **Sessions from before SSO-only.** With `WORKEASY360_SSO_ONLY` on, a user with no Workeasy360 identity (a session, i.e. a refresh token, opened before SSO-only was switched on) in an organization linked to Workeasy360 is refused with 403 `workeasy360_sign_in_required`: with no `sub` there is nothing to check per person, so such a session would survive the person's removal in Workeasy360 for as long as its refresh token keeps rotating. The frontend sends them to **/access-ended?reason=sign_in_required** ("Sign in with Workeasy360", button **Continue with Workeasy360**); signing in links the account by verified e-mail as always. `auth/me/`, the organization list and sign-out stay reachable. EasyBook-only organizations are unaffected, and with SSO-only off (local development) the organization is asked, as before.
+- **Sessions from before SSO-only.** With `WORKEASY360_SSO_ONLY` on, a user with no Workeasy360 identity (a session, i.e. a refresh token, opened before SSO-only was switched on) in an organization linked to Workeasy360 is refused with 403 `workeasy360_sign_in_required`: with no `sub` there is nothing to check per person, so such a session would survive the person's removal in Workeasy360 for as long as its refresh token keeps rotating. The frontend sends them to **/access-ended?reason=sign_in_required** ("Sign in with Workeasy360", button **Continue with Workeasy360**); signing in works once the account is linked to the person's Workeasy360 account ("Existing EasyBook accounts" above: the operator's `link_workeasy360_user`, or the optional automatic link). `auth/me/`, the organization list and sign-out stay reachable. EasyBook-only organizations are unaffected, and with SSO-only off (local development) the organization is asked, as before.
 - A known denial never lapses into access: it is cached without expiry, and each process keeps its own copy of the last answers, so a Redis outage or eviction cannot hand access back.
 - **A Redis outage is never a 500.** Every cache operation on this path fails open: a read is a miss, a write or delete is a no-op, the single-flight lock says "unknown" (so the request asks). The per-process copy stands in for the last answer and the back-off; with nothing known the provider is asked, at the cost of one extra question and one subject query per request until Redis is back. Background jobs the same: the gate never raises.
 - Reads made with POST stay allowed while read-only: views say so with `entitlement_read = True` (document download, Ask Books).
@@ -267,7 +297,7 @@ EasyBook keeps, unchanged:
 
 - its routes (`auth/methods/`, `auth/workeasy360/start/`, `auth/workeasy360/callback/`, `auth/workeasy360/end-session/`, called by the BFF). The BFF, the registered redirect URI and the post-logout URI are untouched;
 - the error codes the BFF maps: `sso/errors.py` translates every connector refusal back (`state_mismatch`, `flow_expired`, `workeasy360_unavailable`, `email_unverified`, `account_conflict`, `membership_inactive`, `account_disabled`, ...);
-- who is provisioned and linked, and how (`sso/provisioning.py`, now the connector's user and organization adapters, in one transaction), linking by verified address exactly as before;
+- who is provisioned and linked, and how (`sso/provisioning.py`, now the connector's user and organization adapters, in one transaction), linking by verified address exactly as before (since 2026-11-19 no longer by default: see "Existing EasyBook accounts");
 - entitlement enforcement: the 403 codes, read-only, `workeasy360_sign_in_required`, background gating and their log lines (`sso/entitlement.py`, now a thin wrapper over `workeasy360_sso.entitlements`).
 
 **What Workeasy360 sees.** The same client id, credential, scopes, redirect URI and post-logout URI, and the same authorization, token and entitlement requests. The one addition is a field the entitlement API defines: every entitlement question now also says `write=false` (EasyBook never asks the "fresh, for a write" variant). Once the back-channel logout URI is registered, ID tokens carry `sid` (the platform's choice, ADR-069).
