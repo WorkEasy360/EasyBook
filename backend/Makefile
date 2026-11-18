@@ -7,7 +7,15 @@ PY := .venv/Scripts/python.exe
 # frontend/.env.example's API_BASE_URL.
 RUN_PORT ?= 8001
 
-.PHONY: lint lint-fix security audit test check run
+.PHONY: install lint lint-fix security audit test check run
+
+# Installs requirements.txt the way CI and the Dockerfile do. The private
+# WorkEasy360 sign-in connector comes from git over SSH, so this needs your
+# own GitHub SSH key with read access to WorkEasy360/workeasy360-sso
+# (docs/workeasy360-sso.md, "Installing the connector").
+install:
+	$(PY) -m pip install --no-deps --build-constraint requirements-build.txt -r requirements.txt
+	$(PY) -m pip check
 
 lint:
 	$(PY) -m ruff check .
@@ -18,8 +26,10 @@ lint-fix:
 security:
 	$(PY) -m bandit -c pyproject.toml -r . -q
 
+# As in CI: requirements.txt's pins as written, without installing them (the
+# connector's git line is skipped; .github/workflows/backend-ci.yml says why).
 audit:
-	$(PY) -m pip_audit -r requirements.txt --progress-spinner off
+	$(PY) -m pip_audit -r requirements.txt --no-deps --disable-pip --progress-spinner off
 
 test:
 	$(PY) manage.py test --settings=config.settings.test

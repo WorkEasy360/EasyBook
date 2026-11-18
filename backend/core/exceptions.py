@@ -31,7 +31,8 @@ def api_exception_handler(exc, context):
 
     if isinstance(response.data, dict) and "detail" in response.data and len(response.data) == 1:
         message = str(response.data["detail"])
-        details = None
+        # A domain error may carry structured, non-sensitive context (``exc.extra``): the frontend reads it.
+        details = getattr(exc, "extra", None)
     else:
         message = "Request failed validation."
         details = response.data

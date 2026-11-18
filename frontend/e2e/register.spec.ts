@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { EMAIL, uniqueSuffix } from "./helpers";
+import { COOKIE_PREFIX, EMAIL, uniqueSuffix } from "./helpers";
 
 /**
  * Sign-up against the real backend: account creation, automatic sign-in into
@@ -26,8 +26,8 @@ test.describe("sign-up", () => {
     await expect(page.getByRole("heading", { level: 1, name: "Set up your organization" })).toBeVisible();
 
     const cookies = await context.cookies();
-    expect(cookies.find((cookie) => cookie.name === "eb_at")?.httpOnly).toBe(true);
-    expect(cookies.find((cookie) => cookie.name === "eb_rt")?.httpOnly).toBe(true);
+    expect(cookies.find((cookie) => cookie.name === `${COOKIE_PREFIX}eb_at`)?.httpOnly).toBe(true);
+    expect(cookies.find((cookie) => cookie.name === `${COOKIE_PREFIX}eb_rt`)?.httpOnly).toBe(true);
 
     // Signed in, so the sign-up page now sends them into the app.
     await page.goto("/register");

@@ -27,12 +27,15 @@ export function AppShell({
   user,
   organizations,
   organization,
+  signOutOfWorkeasy360 = false,
   children,
 }: {
   sections: ResolvedSection[];
   user: User;
   organizations: Organization[];
   organization: Organization;
+  /** Offer "Sign out of EasyBook and Workeasy360" (decided by the server). */
+  signOutOfWorkeasy360?: boolean;
   children: React.ReactNode;
 }) {
   const [drawerOpen, setDrawerOpen] = React.useState(false);
@@ -154,7 +157,7 @@ export function AppShell({
             <GlobalSearchEntry />
           </div>
 
-          <UserMenu user={user} />
+          <UserMenu user={user} signOutOfWorkeasy360={signOutOfWorkeasy360} />
         </header>
 
         {/* tabIndex -1: the skip link must be able to move focus here, not just scroll. */}

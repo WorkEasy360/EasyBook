@@ -75,6 +75,10 @@ class Organization(TimeStampedModel):
     fiscal_year_start_month = models.PositiveSmallIntegerField(default=4)  # 4 = April (India default)
     gstin = models.CharField(max_length=15, blank=True)
     is_active = models.BooleanField(default=True)
+    # The Workeasy360 organization this one belongs to (sso/provisioning.py).
+    # Set when a Workeasy360 sign-in provisions it, or by staff with
+    # `manage.py link_workeasy360_organization`; never from a request body.
+    workeasy360_organization_id = models.UUIDField(null=True, blank=True, unique=True, editable=False)
 
     def __str__(self):
         return self.name

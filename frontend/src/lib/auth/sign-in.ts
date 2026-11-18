@@ -4,7 +4,7 @@ import { NextResponse } from "next/server";
 import { isForeignOriginWrite } from "@/lib/security/request-guards";
 import { callUpstream, decodeJson, type UpstreamResponse } from "@/lib/api/upstream";
 import { toApiError } from "@/lib/api/errors";
-import { writeOrganizationId, writeSession } from "@/lib/auth/session";
+import { clearSignedOutMarker, writeOrganizationId, writeSession } from "@/lib/auth/session";
 import type { LoginResponse, Organization } from "@/types/api/accounts";
 
 /**
@@ -85,6 +85,9 @@ export async function signInWithPassword(
   }
 
   await writeSession(tokens);
+  // Signed in: a later visit may start a sign-in by itself again (direct-visit.ts). Only the
+  // sign-out marker goes; the loop guard expires on its own.
+  await clearSignedOutMarker();
 
   // Select an organization immediately: without X-Organization-Id every
   // org-scoped call 400s with organization_required, so landing on the

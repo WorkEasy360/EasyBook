@@ -18,6 +18,16 @@ import { NAVIGATION, blockedRoutes } from "./navigation";
 const SRC = join(process.cwd(), "src");
 const APP = join(SRC, "app");
 
+/**
+ * Time allowed to the two tests that read the whole source tree. The work is synchronous file reading, so it
+ * is slow only when the files are cold or the machine is busy - there is no shared state or unawaited work
+ * to race on. Measured (2026-10-12, Windows, ~400 source files, scan done twice per run at the time):
+ * 55-175 ms warm in isolation; 8.1 s for the first read of a cold OneDrive tree; 1.3-13.2 s for the first
+ * test inside the full parallel suite (5 runs; vitest's 5 s default failed 2 of them, at 5.1 s and 13.2 s).
+ * 45 s is 3.4x the worst of them. The scan now runs once per file.
+ */
+const SCAN_TIMEOUT_MS = 45_000;
+
 /** Top-level sections that are pages (not API calls, which share names like "sales/invoices"). */
 const APP_SECTIONS = [
   "dashboard", "items", "inventory", "sales", "purchases", "projects", "banking", "accounting",
@@ -61,8 +71,14 @@ function resolves(path: string): boolean {
   );
 }
 
-/** Every "/section/..." path written in the source, normalised. */
+/** Every "/section/..." path written in the source, normalised. Scanned once per run. */
+let scanned: Array<{ path: string; file: string }> | undefined;
 function linkedPaths(): Array<{ path: string; file: string }> {
+  scanned ??= scanSource();
+  return scanned;
+}
+
+function scanSource(): Array<{ path: string; file: string }> {
   const found: Array<{ path: string; file: string }> = [];
   const sections = APP_SECTIONS.join("|");
   // A string or template literal that starts with "/<section>" — an in-app path.
@@ -94,7 +110,7 @@ describe("internal links", () => {
     // Guards the scanner itself: if the pattern silently matched nothing,
     // every other assertion here would pass vacuously.
     expect(linkedPaths().length).toBeGreaterThan(100);
-  });
+  }, SCAN_TIMEOUT_MS);
 
   it("every in-app path in the source resolves to a page", () => {
     const broken = linkedPaths()
@@ -104,7 +120,7 @@ describe("internal links", () => {
       .filter(({ path }) => !resolves(path.replace(/__dynamic__/g, "x")))
       .map(({ path, file }) => `${path}  (${file})`);
     expect([...new Set(broken)]).toEqual([]);
-  });
+  }, SCAN_TIMEOUT_MS);
 
   it("every navigation entry resolves, except the ones recorded as blocked", () => {
     const destinations = NAVIGATION.flatMap((section) => [

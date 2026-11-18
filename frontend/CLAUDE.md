@@ -5,7 +5,7 @@ Production UI for EasyBook, consuming the `backend/` REST API under `/api/v1/`.
 Original design system — never a clone of Zoho Books/Xero/QuickBooks/Tally.
 
 STACK (verified against the registry, not assumed — see "VERSION TRAPS")
-Next.js 16.3.5 (App Router, Turbopack) · React 19.3.0 · TypeScript 5.9.3 ·
+Next.js 16.3.8 (App Router, Turbopack) · React 19.3.0 · TypeScript 5.9.3 ·
 Tailwind 4.3.3 · TanStack Query 5 · react-hook-form 7 + zod 4 · big.js 7 ·
 Vitest 4 · Playwright 1.63. Node 20.9+. All dependencies pinned exactly.
 
@@ -32,7 +32,9 @@ production build is fast enough to hit both, so start the E2E backend with
 `THROTTLE_USER=20000/min THROTTLE_AUTH=2000/min` (test environment only) and
 pass `E2E_API_URL` when Django is not on :8001. Run the suite against
 `next build && next start` before release — two production-only failures
-(a CSP https upgrade, a redirect loop) never reproduced under `next dev`. Backend tests must run with
+(a CSP https upgrade, a redirect loop) never reproduced under `next dev`. A production
+build sets its cookies Secure, so they carry the `__Host-` prefix: run the specs with
+`E2E_SESSION_COOKIE_SECURE=1` then (`e2e/helpers.ts` `COOKIE_PREFIX`). Backend tests must run with
 `DJANGO_SETTINGS_MODULE=config.settings.test` (dev settings leave Celery
 non-eager and several tests fail spuriously).
 
@@ -72,6 +74,20 @@ things follow, and both are load-bearing:
 `src/proxy.ts` is Next 16's rename of `middleware.ts`; `config.matcher` is
 unchanged.
 
+## DIRECT VISIT (SSO-only) — READ BEFORE TOUCHING THE PROXY'S REDIRECTS
+
+When Django says EasyBook is SSO-only (`/auth/methods/`, cached in
+`src/lib/auth/sso-only.ts`), a page navigation with no session goes straight to
+`/api/auth/workeasy360/start?next=<page>` instead of `/login`, so a person
+signed in to Workeasy360 who types EasyBook's address arrives signed in. Policy
+in `src/lib/auth/direct-visit.ts`: never from the sign-in pages, never after a
+sign-out (`eb_signed_out` session cookie, cleared by the next sign-in), never
+within 60 s of the last automatic start (`eb_sso_auto`), never while a session
+exists (access that ended keeps its `/access-ended` explanation), never for
+fetches/RSC/prefetch/`/api`. Both sign-outs must
+keep calling `markSignedOut()`; every new sign-in path must call
+`clearDirectVisitMarkers()`. Details: `docs/workeasy360-sso.md`.
+
 ## INVARIANTS
 
 - Backend financial values are authoritative. Never recreate the accounting,
@@ -99,6 +115,16 @@ unchanged.
   attempt (`src/lib/api/idempotency.ts`).
 
 ## SECURITY CONTROLS (all tested)
+
+- Auth cookies (`eb_at`, `eb_rt`, `eb_org`, `eb_sso`, `eb_signed_out`, `eb_sso_auto`)
+  are named ONLY through `cookieName()` (`src/lib/auth/cookie-names.ts`): with
+  `SESSION_COOKIE_SECURE=1` (production) they are `__Host-` prefixed (Secure,
+  Path=/, no Domain), plain otherwise. Every product is a sibling subdomain of
+  workeasy360.com, and a compromised sibling can set `Domain=.workeasy360.com`
+  cookies under plain names (a planted `eb_sso` would sign a victim in to the
+  attacker's books); it cannot set a `__Host-` one, and a plain-named cookie is
+  never read. Never hard-code a name or an `ACCESS_COOKIE`-style constant; never
+  add a `domain` to `cookieSecurity()`.
 
 - CSP: nonce-based, minted per request in `src/proxy.ts` via
   `src/lib/security/csp.ts`; every page-rendering path must go through

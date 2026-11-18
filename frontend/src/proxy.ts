@@ -1,8 +1,16 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { isNetworkError } from "@/lib/api/errors";
 import { isExpiringSoon } from "@/lib/auth/jwt";
+import { cookieName } from "@/lib/auth/cookie-names";
+import {
+  AUTO_START_GUARD_SECONDS,
+  autoStartPath,
+  autoStartRefusal,
+  isPageNavigation,
+} from "@/lib/auth/direct-visit";
 import { refreshTokens } from "@/lib/auth/refresh";
-import { ACCESS_COOKIE, ORG_COOKIE, REFRESH_COOKIE, cookieSecurity } from "@/lib/auth/session";
+import { cookieSecurity } from "@/lib/auth/session";
+import { isSsoOnly } from "@/lib/auth/sso-only";
 import { clientIpFromHeaders } from "@/lib/security/client-ip";
 import { buildContentSecurityPolicy, generateNonce } from "@/lib/security/csp";
 
@@ -22,6 +30,12 @@ import { buildContentSecurityPolicy, generateNonce } from "@/lib/security/csp";
  *
  * Auth here is a redirect convenience, not a security control — Django
  * authorizes every request regardless of what this decides.
+ *
+ * A page navigation with no session goes to /login - or, when EasyBook is
+ * SSO-only, straight to Workeasy360 sign-in (`autoStartRedirect` below,
+ * integration guide §6b), so a person already signed in to Workeasy360 who
+ * types EasyBook's address arrives signed in. The sign-in pages never do
+ * that: they are public paths, answered before any of it.
  *
  * It also sets the per-request Content-Security-Policy nonce
  * (src/lib/security/csp.ts). Every response that renders a page must go
@@ -49,11 +63,73 @@ function isPublic(pathname: string): boolean {
   return PUBLIC_PATHS.some((path) => pathname === path || pathname.startsWith(`${path}/`));
 }
 
+/** The Workeasy360 launcher opens `/?organization=<uuid>` (src/lib/auth/workeasy360.ts). */
+const LAUNCH_ORGANIZATION = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * Direct visit (integration guide §6b): when EasyBook is SSO-only, a page
+ * navigation from a browser with no session at all starts the Workeasy360
+ * sign-in itself, returning to the page that was asked for. Null - so the
+ * caller sends the visitor to /login as always - unless every one of these
+ * holds (the policy is src/lib/auth/direct-visit.ts):
+ *  - it is a document navigation, not a fetch, an RSC request or a prefetch;
+ *  - the person did not sign out of EasyBook in this browser (marker cookie);
+ *  - this browser did not start one automatically within the last 60 s
+ *    (loop guard cookie, set below);
+ *  - EasyBook is SSO-only. Asked last, and cached: the backend is not called
+ *    for the cases above.
+ *
+ * Only called when there is NO session. A session whose access ended keeps its
+ * explanation (/access-ended); it is never replaced silently.
+ *
+ * The redirect is built the same way as the others in this file: Next turns a
+ * same-origin proxy redirect into a relative Location by itself, so it never
+ * names the address this server happens to listen on (src/lib/redirect.ts).
+ */
+async function autoStartRedirect(request: NextRequest): Promise<NextResponse | null> {
+  const { pathname, search } = request.nextUrl;
+  // The matcher keeps API routes out of this file; this keeps the promise if it is ever widened.
+  if (pathname === "/api" || pathname.startsWith("/api/")) return null;
+  if (!isPageNavigation(request.method, request.headers)) return null;
+  const now = Date.now();
+  const refusal = autoStartRefusal(
+    {
+      signedOut: request.cookies.get(cookieName("signedOut"))?.value,
+      autoStarted: request.cookies.get(cookieName("autoStart"))?.value,
+    },
+    now,
+  );
+  if (refusal) return null;
+  if (!(await isSsoOnly())) return null;
+
+  const response = NextResponse.redirect(new URL(autoStartPath(pathname, search), request.url));
+  // Never let a cache replay this redirect: it would skip the loop guard.
+  response.headers.set("Cache-Control", "no-store");
+  response.cookies.set(cookieName("autoStart"), String(now), {
+    ...cookieSecurity(),
+    maxAge: AUTO_START_GUARD_SECONDS,
+  });
+  return response;
+}
+
 export async function proxy(request: NextRequest) {
   const { pathname, search } = request.nextUrl;
 
-  const access = request.cookies.get(ACCESS_COOKIE)?.value ?? null;
-  const refresh = request.cookies.get(REFRESH_COOKIE)?.value ?? null;
+  // Opened from the Workeasy360 app launcher: sign in through Workeasy360 for
+  // the organization the user picked there, even if a session already exists
+  // here - it may belong to another organization or another person.
+  const launchOrganization = request.nextUrl.searchParams.get("organization");
+  if (launchOrganization && LAUNCH_ORGANIZATION.test(launchOrganization)) {
+    const target = new URL("/api/auth/workeasy360/start", request.url);
+    target.searchParams.set("organization", launchOrganization);
+    if (pathname !== "/") target.searchParams.set("next", pathname);
+    return NextResponse.redirect(target);
+  }
+
+  // Under their `__Host-` names whenever cookies are Secure (src/lib/auth/cookie-names.ts):
+  // a cookie a sibling subdomain planted under the plain name is never looked at.
+  const access = request.cookies.get(cookieName("access"))?.value ?? null;
+  const refresh = request.cookies.get(cookieName("refresh"))?.value ?? null;
   const hasSession = Boolean(access && refresh);
 
   if (isPublic(pathname)) {
@@ -72,6 +148,9 @@ export async function proxy(request: NextRequest) {
   }
 
   if (!hasSession) {
+    const direct = await autoStartRedirect(request);
+    if (direct) return direct;
+
     const target = new URL("/login", request.url);
     // Round-trip the intended destination so sign-in lands where they meant
     // to go. Only the path is carried, never an absolute URL, so this cannot
@@ -98,9 +177,9 @@ export async function proxy(request: NextRequest) {
       target.searchParams.set("reason", "expired");
       const response = NextResponse.redirect(target);
       const base = cookieSecurity();
-      response.cookies.set(ACCESS_COOKIE, "", { ...base, maxAge: 0 });
-      response.cookies.set(REFRESH_COOKIE, "", { ...base, maxAge: 0 });
-      response.cookies.set(ORG_COOKIE, "", { ...base, maxAge: 0 });
+      response.cookies.set(cookieName("access"), "", { ...base, maxAge: 0 });
+      response.cookies.set(cookieName("refresh"), "", { ...base, maxAge: 0 });
+      response.cookies.set(cookieName("organization"), "", { ...base, maxAge: 0 });
       return response;
     }
 
@@ -108,15 +187,15 @@ export async function proxy(request: NextRequest) {
     // the request cookie, and persist the rotated pair on the response.
     const requestCookies = new Headers(request.headers);
     const rewritten = replaceCookie(request.headers.get("cookie"), {
-      [ACCESS_COOKIE]: rotated.access,
-      [REFRESH_COOKIE]: rotated.refresh,
+      [cookieName("access")]: rotated.access,
+      [cookieName("refresh")]: rotated.refresh,
     });
     if (rewritten) requestCookies.set("cookie", rewritten);
 
     const response = pass(request, requestCookies);
     const base = cookieSecurity();
-    response.cookies.set(ACCESS_COOKIE, rotated.access, { ...base, maxAge: REFRESH_MAX_AGE });
-    response.cookies.set(REFRESH_COOKIE, rotated.refresh, { ...base, maxAge: REFRESH_MAX_AGE });
+    response.cookies.set(cookieName("access"), rotated.access, { ...base, maxAge: REFRESH_MAX_AGE });
+    response.cookies.set(cookieName("refresh"), rotated.refresh, { ...base, maxAge: REFRESH_MAX_AGE });
     return response;
   }
 

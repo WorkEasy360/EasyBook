@@ -16,11 +16,13 @@ once — see sales/CLAUDE.md for the full reasoning and the
 import datetime
 
 from django.db import IntegrityError, transaction
+from django.db.models import F, Q
 from django.utils import timezone
 
 from accounting.services.currency import assert_base_currency
 from audit.models import AuditLog
 from audit.services import record as record_audit
+from core import access
 from core.enums import RecurringFrequency
 from core.exceptions import ApplicationError
 from core.recurrence import advance_occurrence
@@ -442,7 +444,7 @@ def _generate_one_expense(*, template_id, organization, actor=None) -> Expense |
 # ----------------------------------------------------------- the sweeps
 
 
-def _sweep(*, model, generate_one, as_of, actor):
+def _sweep(*, model, generate_one, as_of, actor, task):
     """Shared catch-up loop for both template kinds: for every organization,
     every active template that is due generates one document per occurrence
     it is behind on, stopping at `as_of` or the template's end_date."""
@@ -452,8 +454,16 @@ def _sweep(*, model, generate_one, as_of, actor):
     for organization in Organization.objects.filter(is_active=True):
         with tenant_context(organization_id=organization.id):
             template_ids = list(
-                model.objects.filter(is_active=True, next_run_at__lte=as_of).values_list("id", flat=True)
+                model.objects.filter(is_active=True, next_run_at__lte=as_of)
+                .filter(Q(end_date__isnull=True) | Q(end_date__gte=F("next_run_at")))
+                .values_list("id", flat=True)
             )
+        # Only an organization with a template due is asked about Workeasy360. Access ended: skip, leaving
+        # next_run_at where it is; after a renewal the catch-up loop below generates each missed occurrence
+        # once (docs/workeasy360-sso.md).
+        if not template_ids or not access.background_allowed(organization, task=task):
+            continue
+        with tenant_context(organization_id=organization.id):
             for template_id in template_ids:
                 while True:
                     template = model.objects.filter(pk=template_id).first()
@@ -475,6 +485,7 @@ def generate_due_bills(*, as_of=None, actor=None) -> list[Bill]:
         generate_one=_generate_one_bill,
         as_of=as_of or timezone.now().date(),
         actor=actor,
+        task="purchases.generate_recurring_bills",
     )
 
 
@@ -485,4 +496,5 @@ def generate_due_expenses(*, as_of=None, actor=None) -> list[Expense]:
         generate_one=_generate_one_expense,
         as_of=as_of or timezone.now().date(),
         actor=actor,
+        task="purchases.generate_recurring_expenses",
     )

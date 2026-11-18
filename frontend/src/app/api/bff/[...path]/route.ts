@@ -2,14 +2,9 @@ import { NextResponse } from "next/server";
 import { resolveBffPath } from "@/lib/api/bff-path";
 import { callUpstream, decodeJson, type UpstreamResponse } from "@/lib/api/upstream";
 import { DEFAULT_TIMEOUT_MS, REPORT_TIMEOUT_MS } from "@/lib/api/config";
+import { cookieName } from "@/lib/auth/cookie-names";
 import { refreshTokens } from "@/lib/auth/refresh";
-import {
-  ACCESS_COOKIE,
-  ORG_COOKIE,
-  ORG_MAX_AGE_SECONDS,
-  REFRESH_COOKIE,
-  cookieSecurity,
-} from "@/lib/auth/session";
+import { ORG_MAX_AGE_SECONDS, cookieSecurity } from "@/lib/auth/session";
 import { clientIpFromHeaders } from "@/lib/security/client-ip";
 import {
   BodyTooLargeError,
@@ -151,9 +146,9 @@ async function proxy(
   // Read cookies off the request rather than next/headers: this handler may
   // need to REPLACE them after a rotation, and the rotated pair has to ride
   // back on this same response.
-  const accessToken = readCookie(request, ACCESS_COOKIE);
-  const refreshToken = readCookie(request, REFRESH_COOKIE);
-  const storedOrganizationId = readCookie(request, ORG_COOKIE);
+  const accessToken = readCookie(request, cookieName("access"));
+  const refreshToken = readCookie(request, cookieName("refresh"));
+  const storedOrganizationId = readCookie(request, cookieName("organization"));
 
   if (!accessToken || !refreshToken) {
     return unauthorized("Your session has expired. Please sign in again.");
@@ -211,8 +206,8 @@ async function proxy(
   if (!rotated) {
     const response = unauthorized("Your session has expired. Please sign in again.");
     const base = cookieSecurity();
-    response.cookies.set(ACCESS_COOKIE, "", { ...base, maxAge: 0 });
-    response.cookies.set(REFRESH_COOKIE, "", { ...base, maxAge: 0 });
+    response.cookies.set(cookieName("access"), "", { ...base, maxAge: 0 });
+    response.cookies.set(cookieName("refresh"), "", { ...base, maxAge: 0 });
     return response;
   }
 
@@ -230,8 +225,8 @@ async function proxy(
   const response = toNextResponse(upstream);
   const base = cookieSecurity();
   const maxAge = 7 * 24 * 60 * 60;
-  response.cookies.set(ACCESS_COOKIE, rotated.access, { ...base, maxAge });
-  response.cookies.set(REFRESH_COOKIE, rotated.refresh, { ...base, maxAge });
+  response.cookies.set(cookieName("access"), rotated.access, { ...base, maxAge });
+  response.cookies.set(cookieName("refresh"), rotated.refresh, { ...base, maxAge });
   if (!storedOrganizationId && organizationId) rememberOrganization(response, organizationId);
   return response;
 }
@@ -249,7 +244,7 @@ async function firstOrganizationId(accessToken: string, clientIp: string | null)
 }
 
 function rememberOrganization(response: NextResponse, organizationId: string): void {
-  response.cookies.set(ORG_COOKIE, organizationId, { ...cookieSecurity(), maxAge: ORG_MAX_AGE_SECONDS });
+  response.cookies.set(cookieName("organization"), organizationId, { ...cookieSecurity(), maxAge: ORG_MAX_AGE_SECONDS });
 }
 
 function readCookie(request: Request, name: string): string | null {

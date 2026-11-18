@@ -25,3 +25,6 @@ AI_RETRY_MAX_BACKOFF_SECONDS = 0.0
 
 # Automated tests must never call a real external endpoint (phase section 90).
 AUTOMATION_WEBHOOK_SENDER_BACKEND = "fake"
+
+# The existing auth tests exercise password sign-in; sso/tests turn this on.
+WORKEASY360_SSO_ONLY = False

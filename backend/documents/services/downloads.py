@@ -7,6 +7,14 @@ from documents.models.document import Document, UploadStatus
 from documents.storage import get_storage
 
 
+def signed_url_ttl_seconds() -> int:
+    """How long a signed document link lives: ``DOCUMENT_SIGNED_URL_TTL_SECONDS``, but never more than
+    ``DOCUMENT_SIGNED_URL_MAX_TTL_SECONDS`` and never less than a second. Production refuses to start with a
+    longer setting (config/settings/preflight.py); this keeps every other environment, and a setting changed
+    at runtime, inside the same bound - both when a link is issued and when a local one is verified."""
+    return max(1, min(int(settings.DOCUMENT_SIGNED_URL_TTL_SECONDS), int(settings.DOCUMENT_SIGNED_URL_MAX_TTL_SECONDS)))
+
+
 def get_download_url(*, document: Document, actor=None) -> dict:
     """Never for a quarantined document (phase section 7: "quarantined
     documents cannot be downloadable") — everything else, including an
@@ -23,7 +31,7 @@ def get_download_url(*, document: Document, actor=None) -> dict:
     if document.upload_status in (UploadStatus.UPLOADING, UploadStatus.SCANNING, UploadStatus.FAILED):
         raise ApplicationError("This document is not yet available for download.", code="document_not_ready")
 
-    ttl = settings.DOCUMENT_SIGNED_URL_TTL_SECONDS
+    ttl = signed_url_ttl_seconds()
     url = get_storage().get_signed_url(key=document.storage_key, expires_in=ttl)
 
     record_audit(

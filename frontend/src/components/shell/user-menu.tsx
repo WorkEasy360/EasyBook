@@ -4,6 +4,8 @@ import * as React from "react";
 import Link from "next/link";
 import { cn } from "@/lib/cn";
 import { Icons } from "@/components/ui/icons";
+import { SIGN_OUT_FAILED_MESSAGE, endEasyBookSession } from "@/lib/auth/sign-out";
+import { WORKEASY360_SIGN_OUT_PATH } from "@/lib/auth/workeasy360-paths";
 import { displayName, initialsOf, type User } from "@/types/api/accounts";
 import { ThemeToggle } from "./theme-toggle";
 
@@ -13,9 +15,10 @@ import { ThemeToggle } from "./theme-toggle";
  * with Tab serve a keyboard user better than a half-implemented menu. Escape
  * closes it and puts focus back on the trigger.
  */
-export function UserMenu({ user }: { user: User }) {
+export function UserMenu({ user, signOutOfWorkeasy360 = false }: { user: User; signOutOfWorkeasy360?: boolean }) {
   const [open, setOpen] = React.useState(false);
   const [signingOut, setSigningOut] = React.useState(false);
+  const [signOutFailed, setSignOutFailed] = React.useState(false);
   const containerRef = React.useRef<HTMLDivElement>(null);
   const triggerRef = React.useRef<HTMLButtonElement>(null);
   const panelId = React.useId();
@@ -41,16 +44,21 @@ export function UserMenu({ user }: { user: User }) {
     };
   }, [open]);
 
-  async function signOut() {
+  async function signOut(everywhere = false) {
     setSigningOut(true);
-    try {
-      await fetch("/api/auth/logout", { method: "POST" });
-    } finally {
-      // A hard navigation, not router.push: it discards every cached Server
-      // Component payload along with the session.
-      // eslint-disable-next-line @next/next/no-location-assign-relative-destination
-      window.location.assign("/login");
+    setSignOutFailed(false);
+    // Carry on only once EasyBook's own session has really ended. Going on to
+    // "...and Workeasy360" after a failed sign-out would end the Workeasy360
+    // session while this one is still open.
+    if (!(await endEasyBookSession())) {
+      setSigningOut(false);
+      setSignOutFailed(true);
+      return;
     }
+    // A hard navigation, not router.push: it discards every cached Server
+    // Component payload along with the session. "Everywhere" continues to
+    // Workeasy360, which asks before signing anyone out of it.
+    window.location.assign(everywhere ? WORKEASY360_SIGN_OUT_PATH : "/login");
   }
 
   return (
@@ -107,8 +115,27 @@ export function UserMenu({ user }: { user: User }) {
             )}
           >
             <Icons.logout className="size-4 text-ink-500" />
-            {signingOut ? "Signing out…" : "Sign out"}
+            {signingOut ? "Signing out…" : signOutOfWorkeasy360 ? "Sign out of EasyBook" : "Sign out"}
           </button>
+          {signOutOfWorkeasy360 ? (
+            <button
+              type="button"
+              disabled={signingOut}
+              onClick={() => void signOut(true)}
+              className={cn(
+                "flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-ink-800 hover:bg-ink-100",
+                signingOut && "cursor-wait opacity-60",
+              )}
+            >
+              <Icons.logout className="size-4 text-ink-500" />
+              Sign out of EasyBook and Workeasy360
+            </button>
+          ) : null}
+          {signOutFailed ? (
+            <p role="alert" className="px-3 py-2 text-xs text-danger-600">
+              {SIGN_OUT_FAILED_MESSAGE}
+            </p>
+          ) : null}
         </div>
       ) : null}
     </div>

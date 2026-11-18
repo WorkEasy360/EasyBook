@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { isForeignOriginWrite } from "@/lib/security/request-guards";
-import { clearSession, readSession } from "@/lib/auth/session";
+import { clearSession, markSignedOut, readSession } from "@/lib/auth/session";
 import { callUpstream } from "@/lib/api/upstream";
 
 /**
@@ -40,6 +40,10 @@ export async function POST(request: Request): Promise<NextResponse> {
   }
 
   await clearSession();
+  // Leave the sign-out marker: until the next sign-in this browser is shown
+  // the sign-in page, never sent to Workeasy360 by itself (direct-visit.ts).
+  // Both sign-outs go through here first, "...and Workeasy360" included.
+  await markSignedOut();
   return NextResponse.json({ ok: true });
 }
 

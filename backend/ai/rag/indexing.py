@@ -68,6 +68,23 @@ def _purge_and_mark(document_id, *, status: str, reason_code: str) -> DocumentIn
         )
 
 
+#: ``DocumentIndex.reason_code`` of a PENDING row whose indexing was skipped because the organization's
+#: Workeasy360 access had ended; ``ai.rag.tasks.resume_skipped_indexing_task`` picks these up after a renewal.
+SKIPPED_FOR_ACCESS = "workeasy360_access"
+
+
+def mark_skipped_for_access(document_id) -> None:
+    """Record that indexing ``document_id`` was skipped (not failed), so it resumes after a renewal. Only a
+    document with no index yet, or a PENDING one, is marked: an INDEXED document keeps serving its
+    complete chunk set, and a FAILED / NOT_INDEXABLE one has its own reason."""
+    document = Document.objects.filter(pk=document_id).first()
+    if document is None:
+        return
+    index = DocumentIndex.objects.filter(document=document).first()
+    if index is None or index.status == IndexStatus.PENDING:
+        _set_index_state(document, status=IndexStatus.PENDING, reason_code=SKIPPED_FOR_ACCESS)
+
+
 def index_document(*, document_id, force: bool = False, actor=None) -> DocumentIndex | None:
     """Returns the resulting DocumentIndex, or None if the document does not
     exist in the CURRENT tenant (a cross-tenant id resolves to nothing)."""

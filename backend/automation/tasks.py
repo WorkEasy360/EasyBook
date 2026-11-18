@@ -21,6 +21,7 @@ from automation.models.event import AutomationEvent
 from automation.models.execution import AutomationExecution, ExecutionStatus, TriggerSource
 from automation.models.rule import RuleStatus
 from automation.selectors import get_active_rules_for_trigger
+from core import access
 from core.tenancy import tenant_context
 
 logger = get_task_logger("automation.tasks")
@@ -43,6 +44,11 @@ class _RetryableStepsRemain(Exception):
 def run_execution_task(self, execution_id: str, organization_id: str):
     from automation.services.execution import retryable_step_ids, run_execution
 
+    # The customer-visible effect (notifications, outbound webhooks, record changes) happens here. An
+    # organization whose Workeasy360 access ended is skipped, not retried: the execution stays as it is
+    # and the recovery sweeper picks it up again once access returns (docs/workeasy360-sso.md).
+    if not access.background_allowed_for_id(organization_id, task="automation.run_execution"):
+        return {"skipped": "workeasy360_access"}
     try:
         with tenant_context(organization_id=organization_id):
             execution = AutomationExecution.objects.filter(pk=execution_id).first()
@@ -126,10 +132,22 @@ def dispatch_automation_events_task():
 
     total = 0
     for organization in Organization.objects.filter(is_active=True):
+        # Only an organization with work waiting is asked about Workeasy360 (the answer is never needed
+        # otherwise). Denied: the events stay undispatched and are dispatched after a renewal.
+        with tenant_context(organization_id=organization.id):
+            pending = AutomationEvent.objects.filter(dispatched_at__isnull=True).exists()
+        if not pending or not access.background_allowed(organization, task="automation.dispatch_events"):
+            continue
         with tenant_context(organization_id=organization.id):
             total += _dispatch_events_for_org(organization)
     logger.info("automation_events_dispatched", extra={"dispatched": total})
     return {"dispatched": total}
+
+
+def _schedules_due(as_of) -> bool:
+    from automation.models.schedule import AutomationSchedule
+
+    return AutomationSchedule.objects.filter(next_run_at__lte=as_of, rule__status=RuleStatus.ACTIVE).exists()
 
 
 def _run_due_schedules_for_org(organization, as_of) -> int:
@@ -169,10 +187,26 @@ def run_due_schedules_task():
     as_of = timezone.now().date()
     total = 0
     for organization in Organization.objects.filter(is_active=True):
+        # Asked only when a schedule is due. Denied: next_run_at is not advanced, so the schedule fires
+        # once after a renewal (SKIP_MISSED).
+        with tenant_context(organization_id=organization.id):
+            due = _schedules_due(as_of)
+        if not due or not access.background_allowed(organization, task="automation.run_due_schedules"):
+            continue
         with tenant_context(organization_id=organization.id):
             total += _run_due_schedules_for_org(organization, as_of)
     logger.info("automation_schedules_fired", extra={"fired": total, "as_of": str(as_of)})
     return {"fired": total}
+
+
+def _scans_due(organization) -> bool:
+    from automation.services.scheduling import SCAN_TRIGGER_TYPES, scan_candidate_entity_ids
+
+    return any(
+        get_active_rules_for_trigger(trigger_type=trigger_type).exists()
+        and scan_candidate_entity_ids(trigger_type=trigger_type, organization=organization)
+        for trigger_type in SCAN_TRIGGER_TYPES
+    )
 
 
 def _run_due_scans_for_org(organization, as_of) -> int:
@@ -225,6 +259,12 @@ def run_due_scans_task():
     as_of = timezone.now().date()
     total = 0
     for organization in Organization.objects.filter(is_active=True):
+        # Asked only when an active scan rule has a matching entity. Denied: nothing is claimed, so a
+        # state that still matches fires after a renewal.
+        with tenant_context(organization_id=organization.id):
+            due = _scans_due(organization)
+        if not due or not access.background_allowed(organization, task="automation.run_due_scans"):
+            continue
         with tenant_context(organization_id=organization.id):
             total += _run_due_scans_for_org(organization, as_of)
     logger.info("automation_scans_fired", extra={"fired": total, "as_of": str(as_of)})
@@ -245,14 +285,17 @@ RECOVERY_MAX_ATTEMPTS = 10
 RECOVERY_BATCH_SIZE = 200
 
 
+def _stalled_filter(now) -> Q:
+    return Q(status=ExecutionStatus.PENDING, updated_at__lt=now - RECOVERY_PENDING_AFTER) | Q(
+        status=ExecutionStatus.RUNNING, updated_at__lt=now - RECOVERY_RUNNING_AFTER
+    )
+
+
 def _recover_stalled_executions_for_org(organization, now) -> tuple[int, int]:
     recovered = abandoned = 0
     stalled = (
         AutomationExecution.objects.select_for_update(skip_locked=True)
-        .filter(
-            Q(status=ExecutionStatus.PENDING, updated_at__lt=now - RECOVERY_PENDING_AFTER)
-            | Q(status=ExecutionStatus.RUNNING, updated_at__lt=now - RECOVERY_RUNNING_AFTER)
-        )
+        .filter(_stalled_filter(now))
         .order_by("updated_at")[:RECOVERY_BATCH_SIZE]
     )
     for execution in stalled:
@@ -303,6 +346,12 @@ def recover_stalled_executions_task():
     now = timezone.now()
     totals = {"recovered": 0, "abandoned": 0}
     for organization in Organization.objects.filter(is_active=True):
+        # Asked only when something is stalled. Denied: re-enqueuing would only be skipped again and would
+        # spend the recovery budget.
+        with tenant_context(organization_id=organization.id):
+            stalled = AutomationExecution.objects.filter(_stalled_filter(now)).exists()
+        if not stalled or not access.background_allowed(organization, task="automation.recover_stalled_executions"):
+            continue
         with tenant_context(organization_id=organization.id):
             recovered, abandoned = _recover_stalled_executions_for_org(organization, now)
         totals["recovered"] += recovered

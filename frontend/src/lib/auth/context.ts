@@ -3,6 +3,8 @@ import "server-only";
 import { cache } from "react";
 import { redirect } from "next/navigation";
 import { callUpstream, decodeJson } from "@/lib/api/upstream";
+import { errorCodeOf, toApiError } from "@/lib/api/errors";
+import { accessEndedPath, type AccessEndedPath } from "@/lib/auth/workeasy360-paths";
 import { readSession } from "./session";
 import type { Organization, User } from "@/types/api/accounts";
 import type { FiscalYearSetupStatus } from "@/types/api/accounting";
@@ -33,17 +35,35 @@ export interface SessionContext {
  */
 const SESSION_REJECTED = Symbol("session-rejected");
 
+/**
+ * Workeasy360 says access to EasyBook has ended (backend/sso/entitlement.py): the organization's, the
+ * person's (membership removed, seat unassigned), or EasyBook cannot confirm it because Workeasy360
+ * refused EasyBook's own check. Also distinct from "no answer": the session is fine, the licence is not.
+ * Carries the page that explains which.
+ */
+class AccessRefused {
+  constructor(readonly path: AccessEndedPath) {}
+}
+
+function accessRefused(value: unknown): value is AccessRefused {
+  return value instanceof AccessRefused;
+}
+
 async function fetchJson<T>(
   path: string,
   accessToken: string,
   extraHeaders: Record<string, string> = {},
-): Promise<T | null | typeof SESSION_REJECTED> {
+): Promise<T | null | typeof SESSION_REJECTED | AccessRefused> {
   const response = await callUpstream({
     path,
     headers: { Authorization: `Bearer ${accessToken}`, Accept: "application/json", ...extraHeaders },
     cache: "no-store",
   });
   if (response.status === 401) return SESSION_REJECTED;
+  if (response.status === 403) {
+    const refused = toApiError(403, decodeJson(response), response.requestId);
+    if (refused.isAccessEnded) return new AccessRefused(accessEndedPath(errorCodeOf(refused), refused.accessEndedReason));
+  }
   if (response.status !== 200) return null;
   return decodeJson(response) as T;
 }
@@ -64,7 +84,8 @@ export const requireSession = cache(async (): Promise<SessionContext> => {
   ]);
 
   if (user === SESSION_REJECTED || organizations === SESSION_REJECTED) redirect("/login?reason=expired");
-  if (!user || !organizations) {
+  // Neither is organization-scoped, so neither is refused for an ended access.
+  if (!user || !organizations || accessRefused(user) || accessRefused(organizations)) {
     // NOT a redirect to sign-in. The session is still valid, so the proxy
     // would send /login straight back here — an endless redirect loop the
     // moment the API is throttled or briefly down. Failing the render shows
@@ -93,6 +114,9 @@ export const requireSession = cache(async (): Promise<SessionContext> => {
     "X-Organization-Id": active.id,
   });
   if (setup === SESSION_REJECTED) redirect("/login?reason=expired");
+  // Every authenticated render passes here first, so this is where an ended
+  // Workeasy360 access is turned into its one explanation page.
+  if (accessRefused(setup)) redirect(setup.path);
   if (!setup) {
     throw new Error("EasyBook could not load your organization. Please try again in a moment.");
   }
@@ -118,6 +142,7 @@ export const maybeSession = cache(async (): Promise<SessionContext | null> => {
     fetchJson<Organization[]>("/organizations/", session.access),
   ]);
   if (!user || !organizations || user === SESSION_REJECTED || organizations === SESSION_REJECTED) return null;
+  if (accessRefused(user) || accessRefused(organizations)) return null;
   if (organizations.length === 0) return null;
 
   const active =

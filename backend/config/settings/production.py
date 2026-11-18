@@ -1,6 +1,6 @@
 from .base import *
 from .base import env
-from .preflight import derive_csrf_trusted_origins, validate_production_settings
+from .preflight import derive_csrf_trusted_origins, validate_production_settings, validate_workeasy360_settings
 
 DEBUG = False
 
@@ -53,4 +53,18 @@ validate_production_settings(
     document_storage_backend=DOCUMENT_STORAGE_BACKEND,
     trusted_proxy_count=TRUSTED_PROXY_COUNT,
     bff_proxy_secret=BFF_PROXY_SECRET,
+    document_signed_url_ttl_seconds=DOCUMENT_SIGNED_URL_TTL_SECONDS,
+    document_signed_url_max_ttl_seconds=DOCUMENT_SIGNED_URL_MAX_TTL_SECONDS,
+)
+
+validate_workeasy360_settings(
+    sso_only=WORKEASY360_SSO_ONLY,
+    issuer=WORKEASY360_ISSUER,
+    client_id=WORKEASY360_CLIENT_ID,
+    redirect_uri=WORKEASY360_REDIRECT_URI,
+    key_id=WORKEASY360_KEY_ID,
+    has_private_key=bool(WORKEASY360_PRIVATE_KEY or WORKEASY360_PRIVATE_KEY_FILE),
+    product_code=WORKEASY360_PRODUCT_CODE,
+    post_logout_redirect_uri=WORKEASY360_POST_LOGOUT_REDIRECT_URI,
+    allow_insecure_http=WORKEASY360_ALLOW_INSECURE_HTTP,
 )

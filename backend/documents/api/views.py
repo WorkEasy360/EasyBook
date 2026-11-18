@@ -8,7 +8,6 @@ exists, and permanently regresses tenant scoping).
 
 from io import BytesIO
 
-from django.conf import settings
 from django.core import signing
 from django.http import FileResponse, Http404
 from rest_framework import generics, status
@@ -38,7 +37,7 @@ from documents.models.ocr_result import OCRResult
 from documents.models.review import ReviewStatus
 from documents.search import search_documents
 from documents.selectors import find_possible_duplicates
-from documents.services.downloads import get_download_url
+from documents.services.downloads import get_download_url, signed_url_ttl_seconds
 from documents.services.links import create_link, delete_link
 from documents.services.ocr import request_ocr
 from documents.services.review import approve_review, reject_review
@@ -152,6 +151,8 @@ class DocumentArchiveView(OrganizationScopedMixin, APIView):
 class DocumentDownloadView(OrganizationScopedMixin, APIView):
     permission_classes = [HasOrgPermission]
     required_permission = Permission.DOWNLOAD_DOCUMENT
+    # A POST that only reads: a read-only (suspended) organization may still download (sso/entitlement.py).
+    entitlement_read = True
 
     def post(self, request, pk):
         document = _get_or_404(Document, pk, "Document")
@@ -177,7 +178,7 @@ class LocalStorageDownloadView(APIView):
 
     def get(self, request, token):
         try:
-            key = LocalDocumentStorage.verify_token(token, max_age=settings.DOCUMENT_SIGNED_URL_TTL_SECONDS)
+            key = LocalDocumentStorage.verify_token(token, max_age=signed_url_ttl_seconds())
         except (signing.BadSignature, signing.SignatureExpired):
             raise Http404
 

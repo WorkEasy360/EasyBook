@@ -1,3 +1,4 @@
+from django.conf import settings
 from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -13,11 +14,28 @@ from accounts.serializers import (
     RegisterSerializer,
     UserSerializer,
 )
+from core.exceptions import ApplicationError
 from core.views import AuthenticatedAPIView, OrganizationScopedMixin
+
+
+class ManagedByWorkeasy360(ApplicationError):
+    """WORKEASY360_SSO_ONLY is on: people, passwords and organizations are
+    managed in Workeasy360, and EasyBook only receives them at sign-in
+    (sso/). Read from settings here rather than imported from sso, which
+    sits beside accounts and depends on it."""
+
+    status_code = 403
+    default_code = "managed_by_workeasy360"
+    default_detail = "Sign in with your Workeasy360 account."
 
 
 class LoginView(TokenObtainPairView):
     throttle_scope = "auth"
+
+    def post(self, request, *args, **kwargs):
+        if settings.WORKEASY360_SSO_ONLY:
+            raise ManagedByWorkeasy360()
+        return super().post(request, *args, **kwargs)
 
 
 # A SimpleJWT refresh token is a few hundred bytes; anything far larger is not
@@ -54,6 +72,8 @@ class RegisterView(APIView):
     throttle_scope = "auth"
 
     def post(self, request):
+        if settings.WORKEASY360_SSO_ONLY:
+            raise ManagedByWorkeasy360("Accounts are created in Workeasy360.")
         serializer = RegisterSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         user = serializer.save()
@@ -76,6 +96,10 @@ class OrganizationListCreateView(AuthenticatedAPIView):
         return Response(OrganizationSerializer(organizations, many=True).data)
 
     def post(self, request):
+        if settings.WORKEASY360_SSO_ONLY:
+            # An organization made here would have no Workeasy360 organization,
+            # plan or entitlement behind it.
+            raise ManagedByWorkeasy360("Organizations are created in Workeasy360.")
         serializer = OrganizationCreateSerializer(data=request.data, context={"request": request})
         serializer.is_valid(raise_exception=True)
         organization = serializer.save()

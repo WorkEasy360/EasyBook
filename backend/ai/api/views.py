@@ -54,6 +54,9 @@ class AskView(OrganizationScopedMixin, APIView):
     independent, separately rate-limited question — asking is read-only, so
     a duplicate can never double-apply anything."""
 
+    # Asking changes no books: a read-only (suspended) organization may still ask (sso/entitlement.py).
+    entitlement_read = True
+
     permission_classes = [HasOrgPermission]
     required_permission = Permission.USE_AI_ASSISTANT
 

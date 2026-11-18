@@ -19,4 +19,4 @@ site, not where it's later imported), so every existing reference — including
 CELERY_BEAT_SCHEDULE's "ai.rag.tasks.purge_expired_ai_data" — stays correct.
 """
 
-from ai.rag.tasks import index_document_task, purge_expired_ai_data  # noqa: F401
+from ai.rag.tasks import index_document_task, purge_expired_ai_data, resume_skipped_indexing_task  # noqa: F401

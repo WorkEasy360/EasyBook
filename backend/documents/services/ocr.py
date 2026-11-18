@@ -9,7 +9,7 @@ from decimal import Decimal
 
 from django.conf import settings
 from django.db import transaction
-from django.db.models import F
+from django.db.models import F, Q
 from django.utils import timezone
 
 from audit.models import AuditLog
@@ -139,6 +139,15 @@ def _fail_ocr(document, *, error_code: str, error_message: str) -> None:
         object_type="documents.Document", object_id=document.id,
         changes={"ocr_status": OCRStatus.FAILED, "reason": error_code},
     )
+
+
+def has_stalled_ocr(*, queued_before, processing_before) -> bool:
+    """Is anything in the current tenant waiting for ``recover_stalled_ocr``? (Asked first, so an
+    organization with nothing stalled costs nothing else - not even a Workeasy360 entitlement question.)"""
+    return Document.objects.filter(
+        Q(ocr_status=OCRStatus.QUEUED, updated_at__lt=queued_before)
+        | Q(ocr_status=OCRStatus.PROCESSING, updated_at__lt=processing_before)
+    ).exists()
 
 
 def recover_stalled_ocr(*, queued_before, processing_before, max_attempts: int, batch_size: int = 200) -> dict:
