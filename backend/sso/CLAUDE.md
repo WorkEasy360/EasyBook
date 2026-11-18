@@ -1,7 +1,7 @@
 # SSO
 
 PURPOSE
-Workeasy360 sign-in. EasyBook is a Workeasy360 product, so people sign in with their Workeasy360 account (OpenID Connect: authorization code + PKCE S256, `private_key_jwt` client authentication). The protocol is the shared **workeasy360-sso** connector (Django app `workeasy360_sso`, vendored wheel in `backend/vendor/`, version pinned in `requirements.txt` and by hash in `vendor/SHA256SUMS`); this module keeps EasyBook's routes, error codes, provisioning and enforcement rules around it, and maps the result onto EasyBook's own user, organization and membership. Full guide: `docs/workeasy360-sso.md`.
+Workeasy360 sign-in. EasyBook is a Workeasy360 product, so people sign in with their Workeasy360 account (OpenID Connect: authorization code + PKCE S256, `private_key_jwt` client authentication). The protocol is the shared **workeasy360-sso** connector (Django app `workeasy360_sso`, from the PRIVATE repository WorkEasy360/workeasy360-sso, pinned by commit SHA in `requirements.txt`; never commit any of it to this public repository); this module keeps EasyBook's routes, error codes, provisioning and enforcement rules around it, and maps the result onto EasyBook's own user, organization and membership. Full guide: `docs/workeasy360-sso.md`.
 
 OWNS
 - `connector_settings.py` — `settings.WORKEASY360_SSO`: the connector's configuration, derived from the `WORKEASY360_*` settings each time it loads (every key given, so nothing falls through to its environment lookup). `config.py` resets it when a `WORKEASY360_*` setting changes (tests).

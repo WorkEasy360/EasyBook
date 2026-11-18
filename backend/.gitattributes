@@ -1,0 +1,4 @@
+# Read by ssh inside a Linux build (the Dockerfile's builder stage, backend CI): it keeps LF in every
+# checkout, so an image built from a Windows checkout (core.autocrlf) does not hand ssh host keys
+# that end in a carriage return.
+github_known_hosts text eol=lf

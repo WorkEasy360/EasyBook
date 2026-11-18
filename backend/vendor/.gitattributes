@@ -1,4 +1,0 @@
-# Wheels are binary. SHA256SUMS keeps LF in every checkout: with CRLF, `sha256sum -c` in a Linux build
-# (the Dockerfile, CI) reads each file name with a trailing carriage return and fails.
-*.whl binary
-SHA256SUMS text eol=lf

@@ -18,20 +18,37 @@ FROM ${PYTHON_IMAGE} AS builder
 ENV PIP_NO_CACHE_DIR=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1
 
+# git and an SSH client fetch the private WorkEasy360 sign-in connector
+# (requirements.txt). Builder stage only: the runtime stage below copies
+# /opt/venv from here and nothing else, so neither ships.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends git openssh-client \
+    && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /build
 
 # requirements.txt only — requirements-dev.txt (ruff/bandit/pip-audit) never
 # ships in a production image, so a runtime container never carries a linter
 # or the tools that scan for one (backend/CLAUDE.md "QUALITY GATE").
-COPY requirements.txt .
-# Wheels that are on no public index (the private WorkEasy360 sign-in
-# connector), installed by path from requirements.txt. Their hashes are
-# checked first, so a wheel swapped in the build context fails the build.
-COPY vendor/ vendor/
-RUN cd vendor && sha256sum -c SHA256SUMS
+# requirements-build.txt pins (by hash) the build backend pip builds the
+# connector's wheel with; github_known_hosts holds github.com's published SSH
+# host keys, the only ones trusted below.
+COPY requirements.txt requirements-build.txt github_known_hosts ./
 RUN python -m venv /opt/venv \
-    && /opt/venv/bin/pip install --upgrade pip setuptools wheel \
-    && /opt/venv/bin/pip install -r requirements.txt
+    && /opt/venv/bin/pip install --upgrade pip setuptools wheel
+# The connector comes from its private GitHub repository over SSH, pinned to
+# a commit (requirements.txt). Build with `docker build --ssh default` (CI:
+# the read-only deploy key WORKEASY360_SSO_DEPLOY_KEY in an ssh-agent; a
+# developer: their own agent). BuildKit mounts the agent's socket for this one
+# RUN only, so no key, token or .git reaches any layer: pip clones into a
+# temporary directory and deletes it, and PIP_NO_CACHE_DIR keeps no built
+# wheel. required=true: without --ssh the build stops here, saying so.
+# --no-deps: requirements.txt pins the whole tree, so nothing unpinned is ever
+# installed, and `pip check` proves the pinned tree complete.
+RUN --mount=type=ssh,required=true \
+    GIT_SSH_COMMAND="ssh -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=/build/github_known_hosts -o GlobalKnownHostsFile=/dev/null" \
+    /opt/venv/bin/pip install --no-deps --build-constraint requirements-build.txt -r requirements.txt \
+    && /opt/venv/bin/pip check
 
 FROM ${PYTHON_IMAGE} AS runtime
 

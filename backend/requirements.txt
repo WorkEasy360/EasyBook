@@ -46,7 +46,11 @@ uvicorn==0.53.0
 vine==5.1.0
 wcwidth==0.8.3
 # The shared WorkEasy360 sign-in connector (Django app workeasy360_sso, docs/workeasy360-sso.md).
-# Private: it is not on PyPI and its name must never be resolved from an index, so it is installed
-# from the wheel committed in vendor/ (a path, relative to backend/), pinned by version in the file
-# name and by SHA-256 in vendor/SHA256SUMS, which the Dockerfile and CI verify before installing.
-./vendor/workeasy360_sso-0.3.1-py3-none-any.whl
+# PRIVATE: its repository, WorkEasy360/workeasy360-sso, is private and this one is public, so none of
+# its code may be committed here (no vendored wheel), and its name must never be resolved from an
+# index (it is not on PyPI). Installed from git over SSH, pinned to the full commit SHA of its tag
+# v0.3.1 (a tag can be moved; a commit cannot), which needs read access to that repository: CI and
+# the image build use a read-only deploy key (Actions secret WORKEASY360_SSO_DEPLOY_KEY), a developer
+# their own GitHub SSH key. Install with --no-deps and --build-constraint requirements-build.txt:
+# the exact command, and why, is in docs/workeasy360-sso.md ("Installing the connector").
+workeasy360-sso @ git+ssh://git@github.com/WorkEasy360/workeasy360-sso.git@a98552f8f37e1e4f1fab1de99cc5b915cb9ed5c1

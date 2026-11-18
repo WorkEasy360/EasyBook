@@ -1,0 +1,29 @@
+# Build constraints, passed as `pip install --build-constraint requirements-build.txt` (pip >= 25.3)
+# wherever requirements.txt is installed (Dockerfile, backend-ci.yml, `make install`).
+#
+# requirements.txt installs the private WorkEasy360 sign-in connector from git, as source, so pip
+# builds its wheel in an isolated environment with the connector's build backend (hatchling, its
+# pyproject.toml). Without these lines that would be whatever hatchling is newest on PyPI at build
+# time, unpinned and unhashed, writing the code that runs in production. Pinned by version AND by
+# SHA-256 (pip enforces both): a changed file on PyPI fails the build. Each hash is the release's
+# py3-none-any wheel, the file pip picks on Python 3.10 (checked against PyPI 2026-11-18). tomli is
+# only installed on Python < 3.11.
+#
+# Updating: when the connector's build-system requirement moves past hatchling 1.33.0, the build
+# stops with a resolver error. Resolve the new set for Python 3.10 with
+#   pip download --only-binary=:all: --python-version 3.10 --platform manylinux2014_x86_64 hatchling==<version>
+# and pin each file's sha256 (`sha256sum *.whl`, or the "sha256" PyPI shows for that file).
+hatchling==1.33.0 \
+    --hash=sha256:415290b84f464d2884303fca8974d38e7b85579069fab02a15db0828fbb1446d
+packaging==26.3 \
+    --hash=sha256:d7193f7c8e4e93f444fde0262bf90af30e16fa0ad0ad44cb553c87339b23cd1c
+pathspec==1.1.1 \
+    --hash=sha256:a00ce642f577bf7f473932318056212bc4f8bfdf53128c78bbd5af0b9b20b189
+pluggy==1.7.0 \
+    --hash=sha256:7dd7b0d8832ba3cb632c306926ded123429211b83641b35dc5c41ad2d34f9bec
+tomli==2.5.0 \
+    --hash=sha256:32a7b79ac57a2e83670ce329ccf675798bc5a2094783a63676866b70503f2e2b
+tomlkit==0.15.2 \
+    --hash=sha256:05562412163a3037b94497385fb7f9204c637bc605af7a48199e41cf2272f437
+trove-classifiers==2026.9.21.13 \
+    --hash=sha256:8b1ff4f9c191b1040b71c37f1e445ab99732911e3cd91de52838453a854d7a17

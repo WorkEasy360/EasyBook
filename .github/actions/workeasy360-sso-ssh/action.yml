@@ -1,0 +1,57 @@
+name: WorkEasy360 sign-in connector, SSH access
+description: >-
+  Loads the read-only deploy key of the private repository WorkEasy360/workeasy360-sso into an
+  ssh-agent for the rest of the job, with github.com's host keys pinned (backend/github_known_hosts).
+  backend/requirements.txt installs the connector from git over SSH; `docker build --ssh default`
+  forwards this agent to the image build. A few lines of shell rather than a third-party action:
+  the key is read from the environment into the agent and never written to disk.
+
+inputs:
+  deploy-key:
+    description: The deploy key's private half, from secrets.WORKEASY360_SSO_DEPLOY_KEY.
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Load the deploy key into an ssh-agent, github.com host keys pinned
+      shell: bash
+      env:
+        DEPLOY_KEY: ${{ inputs.deploy-key }}
+      run: |
+        set -euo pipefail
+        if [ -z "${DEPLOY_KEY//[[:space:]]/}" ]; then
+          echo "::error title=Missing secret WORKEASY360_SSO_DEPLOY_KEY::The Actions secret WORKEASY360_SSO_DEPLOY_KEY is not set (or not available to this run: pull requests from forks get no secrets). It must hold the private half of a read-only deploy key of WorkEasy360/workeasy360-sso, which backend/requirements.txt installs from git over SSH. See docs/workeasy360-sso.md, 'Installing the connector'."
+          exit 1
+        fi
+
+        # github.com's published host keys and nothing else (no ssh-keyscan, no StrictHostKeyChecking=no).
+        known_hosts="$RUNNER_TEMP/w360sso-known_hosts"
+        cp "$GITHUB_WORKSPACE/backend/github_known_hosts" "$known_hosts"
+        git_ssh="ssh -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$known_hosts -o GlobalKnownHostsFile=/dev/null"
+
+        # The agent outlives this step; the job's "Unload the deploy key" step stops it.
+        sock="$RUNNER_TEMP/w360sso-agent.sock"
+        if ! agent_env=$(ssh-agent -s -a "$sock"); then
+          echo "::error title=ssh-agent did not start::Could not start ssh-agent for the WorkEasy360 sign-in connector's deploy key."
+          exit 1
+        fi
+        eval "$agent_env" > /dev/null
+        {
+          echo "SSH_AUTH_SOCK=$sock"
+          echo "SSH_AGENT_PID=$SSH_AGENT_PID"
+          echo "GIT_SSH_COMMAND=$git_ssh"
+        } >> "$GITHUB_ENV"
+
+        # tr: a key pasted from Windows may carry CRLF; printf: the key format needs its final newline.
+        if ! printf '%s\n' "$DEPLOY_KEY" | tr -d '\r' | ssh-add -q - ; then
+          echo "::error title=Unusable secret WORKEASY360_SSO_DEPLOY_KEY::ssh-add refused the key in WORKEASY360_SSO_DEPLOY_KEY (its message is above). Store the whole private key file, from -----BEGIN to -----END, without a passphrase."
+          exit 1
+        fi
+
+        # Fails here, naming the secret, rather than deep inside pip or docker build.
+        if ! GIT_SSH_COMMAND="$git_ssh" git ls-remote --exit-code git@github.com:WorkEasy360/workeasy360-sso.git HEAD > /dev/null; then
+          echo "::error title=Deploy key cannot read WorkEasy360/workeasy360-sso::The key in WORKEASY360_SSO_DEPLOY_KEY was loaded but cannot read WorkEasy360/workeasy360-sso. Add its public half to that repository as a read-only deploy key (its Settings, Deploy keys)."
+          exit 1
+        fi
+        echo "Deploy key of WorkEasy360/workeasy360-sso loaded; github.com host keys pinned."

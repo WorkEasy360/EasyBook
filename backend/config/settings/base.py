@@ -42,9 +42,9 @@ INSTALLED_APPS = [
     # Workeasy360 sign-in (OpenID Connect). Same layer as accounts: depends on
     # core/accounts/authz/audit only. See sso/CLAUDE.md.
     "sso",
-    # The shared WorkEasy360 sign-in connector sso/ is built on (vendored
-    # wheel, vendor/): the protocol, its tables and the back-channel logout
-    # receiver. Only sso/ uses it.
+    # The shared WorkEasy360 sign-in connector sso/ is built on (private
+    # repository, pinned by commit in requirements.txt): the protocol, its
+    # tables and the back-channel logout receiver. Only sso/ uses it.
     "workeasy360_sso",
     "authz",
     "audit",
@@ -430,7 +430,7 @@ SIMPLE_JWT = {
 # account (OpenID Connect, authorization code + PKCE, private_key_jwt). Only
 # the issuer is configured; every endpoint comes from its discovery document.
 # The protocol is the shared workeasy360-sso connector (INSTALLED_APPS
-# "workeasy360_sso", vendored wheel), which reads these same settings through
+# "workeasy360_sso", private repository), which reads these same settings through
 # WORKEASY360_SSO below. docs/workeasy360-sso.md has the registration steps.
 # Production: https://accounts.workeasy360.com (WorkEasy360 Accounts), exactly,
 # no trailing slash. Changing it needs `manage.py move_workeasy360_issuer`.

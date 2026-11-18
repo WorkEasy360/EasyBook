@@ -4,7 +4,7 @@
 
 EasyBook is a Workeasy360 product. People sign in with the same email and password they use for Workeasy360; EasyBook never sees that password. With `WORKEASY360_SSO_ONLY` on (the default outside local development), it is the only way in: EasyBook's own password sign-in, self-registration and "create an organization" are switched off, because people, plans and organizations are managed in Workeasy360.
 
-The OpenID Connect protocol itself is the shared **workeasy360-sso** connector (Django app `workeasy360_sso`, version 0.3.1, vendored in `backend/vendor/`); EasyBook keeps its own routes, error codes, provisioning and enforcement rules around it. See "The workeasy360-sso connector and back-channel logout" below.
+The OpenID Connect protocol itself is the shared **workeasy360-sso** connector (Django app `workeasy360_sso`, version 0.3.1). It lives in a **private** repository and is installed from there, never committed here: see "Installing the connector (a private repository)". EasyBook keeps its own routes, error codes, provisioning and enforcement rules around it. See "The workeasy360-sso connector and back-channel logout" below.
 
 ## How a sign-in works
 
@@ -74,7 +74,57 @@ To rotate the key, add a second credential in Workeasy360, deploy the new key an
 
 ## Local development
 
+The backend needs the connector installed from its private repository first (`make install`; see the next section).
+
 `dev.py` leaves `WORKEASY360_SSO_ONLY` off, so password sign-in keeps working with no Workeasy360 running. To rehearse the real flow, register a development integration whose redirect URI is `http://localhost:3000/api/auth/callback/workeasy360` (Workeasy360 accepts `http://localhost` outside production), fill in the `WORKEASY360_*` values in `backend/.env`, and set `WORKEASY360_SSO_ONLY=1`. `dev.py` turns `WORKEASY360_ALLOW_INSECURE_HTTP` on, which the connector needs for an `http://localhost` issuer or redirect URI.
+
+## Installing the connector (a private repository)
+
+`workeasy360-sso` lives in **WorkEasy360/workeasy360-sso, a private repository**. EasyBook's repository is public, so nothing of the connector may be committed here: no wheel, no copy of its code, and no key or token to fetch it with. `backend/requirements.txt` names it by commit:
+
+```
+workeasy360-sso @ git+ssh://git@github.com/WorkEasy360/workeasy360-sso.git@a98552f8f37e1e4f1fab1de99cc5b915cb9ed5c1
+```
+
+That commit is the connector's tag `v0.3.1`. The pin is the full commit SHA, never the tag: a tag can be moved, a commit cannot, and CI refuses any other form (`backend-ci.yml`, "The connector is pinned to a full commit SHA"). Installing it needs read access to that repository, over SSH.
+
+**On your machine** (you need read access to WorkEasy360/workeasy360-sso; the owner grants it):
+
+1. Have an SSH key on your GitHub account, and check it: `ssh -T git@github.com` answers "Hi <you>! You've successfully authenticated". On Windows, pip runs Git for Windows, which uses its own OpenSSH and `%USERPROFILE%\.ssh`.
+2. In `backend/`, with the virtualenv: `make install` (pip >= 25.3, for `--build-constraint`: `.venv/Scripts/python.exe -m pip install --upgrade pip` first). It runs exactly what CI and the Dockerfile run:
+   ```
+   .venv/Scripts/python.exe -m pip install --no-deps --build-constraint requirements-build.txt -r requirements.txt
+   .venv/Scripts/python.exe -m pip check
+   ```
+   pip clones the pinned commit, builds the connector's wheel with the hash-pinned build backend in `requirements-build.txt`, and installs it with every other pin.
+3. If you sign in to GitHub over HTTPS (GitHub CLI, `gh auth setup-git`) rather than with an SSH key, point git at HTTPS for this one repository instead: `git config --global url."https://github.com/WorkEasy360/workeasy360-sso".insteadOf "ssh://git@github.com/WorkEasy360/workeasy360-sso"`.
+
+Without access everything else installs and the connector does not, so Django does not start (`workeasy360_sso` is in `INSTALLED_APPS`). That is deliberate: there is no public copy to fall back to.
+
+**The image.** From `backend/`: `docker build --ssh default -t easybook-backend .`, with an SSH agent that holds a key with access (`--ssh default` forwards the agent named by `SSH_AUTH_SOCK`; `--ssh default=<path to an unencrypted private key>` passes a key file instead). BuildKit mounts the agent's socket into the one `RUN` that installs the connector, and nowhere else: no key, token or `.git` reaches any layer, and git and the SSH client exist only in the builder stage. Without `--ssh` the build stops at that step. The built image does contain the connector's code (`/opt/venv/.../workeasy360_sso`), as it must to run: keep the image in a private registry (ECR), never a public one.
+
+**CI** (`.github/workflows/backend-ci.yml`). The `test`, `container` and `publish` jobs need the Actions secret **`WORKEASY360_SSO_DEPLOY_KEY`**: the private half of a **read-only deploy key** of WorkEasy360/workeasy360-sso. The local action `.github/actions/workeasy360-sso-ssh` loads it into an ssh-agent from the environment (it is never written to disk), trusts only github.com's published host keys (`backend/github_known_hosts`, `StrictHostKeyChecking=yes`), checks that the key can read the repository, and stops with an error naming the secret when it is missing or unusable. The key is unloaded as soon as the install (or the image build) is done, before any third-party action runs. The test job keeps no pip cache: pip caches the wheel it builds from the pinned commit, and the Actions cache of a public repository can be restored by a pull request from a fork. Pull requests from forks get no secrets at all, so their backend tests stop at that step (the `static` job still runs).
+
+To create the key and the secret (the owner, once; never commit either half):
+
+```
+ssh-keygen -t ed25519 -N "" -C "EasyBook CI, read-only" -f easybook-ci-workeasy360-sso
+gh repo deploy-key add easybook-ci-workeasy360-sso.pub -R WorkEasy360/workeasy360-sso --title "EasyBook CI (read-only)"
+gh secret set WORKEASY360_SSO_DEPLOY_KEY -R WorkEasy360/EasyBook < easybook-ci-workeasy360-sso
+rm easybook-ci-workeasy360-sso easybook-ci-workeasy360-sso.pub
+```
+
+(The same in the web interface: the connector repository's Settings, Deploy keys, without "Allow write access"; then EasyBook's Settings, Secrets and variables, Actions.) If Dependabot is ever enabled, its pull requests read Dependabot secrets: add the same secret there.
+
+**Integrity, with no wheel committed.**
+
+- The connector's code is fixed by the commit SHA: git checks every object it fetches against it. It is the same code as the 0.3.1 wheel this repository used to carry (compared file by file: identical, apart from Windows line endings in five files of that wheel).
+- Its build: pip builds the wheel in an isolated environment, with `hatchling` and its dependencies pinned by version and SHA-256 in `requirements-build.txt` (`--build-constraint`), not with whatever PyPI has that day.
+- Everything else: `requirements.txt` pins every other package to an exact version. Those pins carry no hashes (they never did; the vendored wheel was the only file checked by hash). Installing with `--no-deps` and then `pip check` means exactly the pinned tree is installed, and that it is complete.
+- Audit: `pip-audit -r requirements.txt --no-deps --disable-pip` (CI's `static` job, `make audit`) audits every pin without installing anything, so it needs no access to the connector. It skips the connector's git line, as before (it is on no index and in no advisory database); its dependencies are pinned, and audited, in `requirements.txt`.
+- Hash-pinning all of `requirements.txt` later (`--require-hashes`) would need the connector's line in a file of its own, installed by a second pip command: pip's hash-checking mode covers a whole install and refuses a git requirement, which has no file to hash.
+
+**Moving to another connector release.** Tag it in the connector repository. Find the commit: `gh api repos/WorkEasy360/workeasy360-sso/git/ref/tags/vX.Y.Z` gives an object; when its `type` is `tag` (an annotated tag), `gh api repos/WorkEasy360/workeasy360-sso/git/tags/<that sha>` gives the commit as `object.sha`. Put that full SHA in `requirements.txt`, update the version named in this guide, then `make install` and the full suite.
 
 ## After sign-in: the organization's access is re-checked (`sso/entitlement.py`)
 
@@ -183,7 +233,7 @@ Because a direct visit starts a sign-in by itself, starts are routine (an office
 
 ## The workeasy360-sso connector and back-channel logout (2026-11-17)
 
-The OpenID Connect protocol is the shared **workeasy360-sso** connector, not EasyBook code: the wheel `backend/vendor/workeasy360_sso-0.3.1-py3-none-any.whl` (pinned in `requirements.txt`, and by SHA-256 in `vendor/SHA256SUMS`, which the Dockerfile and CI check), `INSTALLED_APPS` entry `workeasy360_sso`. It owns discovery and the key set, the authorization request (state, nonce, PKCE S256, `organization`), the single-use pending sign-in, `private_key_jwt`, ID-token and logout-token verification, the entitlement API with its cache and rules, and the back-channel logout receiver. It reads its configuration from the `WORKEASY360_*` settings above (`sso/connector_settings.py`); no environment variable changed its name.
+The OpenID Connect protocol is the shared **workeasy360-sso** connector, not EasyBook code: version 0.3.1, installed from the private repository WorkEasy360/workeasy360-sso at the commit `requirements.txt` pins ("Installing the connector (a private repository)" above), `INSTALLED_APPS` entry `workeasy360_sso`. It owns discovery and the key set, the authorization request (state, nonce, PKCE S256, `organization`), the single-use pending sign-in, `private_key_jwt`, ID-token and logout-token verification, the entitlement API with its cache and rules, and the back-channel logout receiver. It reads its configuration from the `WORKEASY360_*` settings above (`sso/connector_settings.py`); no environment variable changed its name.
 
 EasyBook keeps, unchanged:
 
