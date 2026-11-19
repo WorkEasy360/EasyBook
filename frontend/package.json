@@ -45,7 +45,7 @@
     "tailwindcss": "4.3.3",
     "typescript": "5.9.3",
     "@testing-library/dom": "10.4.2",
-    "vitest": "4.1.11"
+    "vitest": "4.1.12"
   },
   "overrides": {
     "source-map-js": "1.2.2"
